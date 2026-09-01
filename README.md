@@ -47,8 +47,7 @@ sans identifiants ; seuls les appels réseau les exigent.
 - construction et validation d'un corpus jurisprudentiel exhaustif sans RAG,
   embeddings ni top-k.
 
-Le serveur fournit également un dictionnaire juridique, un guide de rédaction
-des conclusions, des exemples et le prompt `workflow_conclusions`.
+Le serveur fournit également un dictionnaire juridique.
 
 ## Développement
 

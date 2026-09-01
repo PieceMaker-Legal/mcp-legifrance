@@ -6,7 +6,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(__file__))
 sys.path.insert(0, ROOT)
 
-from config.mcp_definitions import MCP_TOOLS
+from config.mcp_definitions import MCP_RESOURCES, MCP_TOOLS
 from mcp_stdio_server import process_request
 from tools.handlers import TOOL_HANDLERS
 
@@ -21,6 +21,22 @@ class StdioServerTest(unittest.TestCase):
         })
         self.assertEqual(response["result"]["protocolVersion"], "2025-06-18")
         self.assertEqual(response["result"]["serverInfo"]["name"], "Légifrance MCP")
+        self.assertNotIn("prompts", response["result"]["capabilities"])
+
+    def test_seul_le_dictionnaire_est_expose_comme_ressource(self):
+        self.assertEqual(
+            [resource["uri"] for resource in MCP_RESOURCES],
+            ["resource://dictionnaire-juridique"],
+        )
+
+    def test_aucun_prompt_de_conclusions_n_est_expose(self):
+        response = process_request({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "prompts/list",
+            "params": {},
+        })
+        self.assertEqual(response["error"]["code"], -32601)
 
     def test_outils_exhaustifs_decouvrables(self):
         response = process_request({
@@ -49,4 +65,3 @@ class StdioServerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

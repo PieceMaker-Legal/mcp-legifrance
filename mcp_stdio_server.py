@@ -28,15 +28,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger('legifrance.mcp_stdio')
 
-from config.mcp_definitions import MCP_TOOLS, MCP_RESOURCES, MCP_PROMPTS
+from config.mcp_definitions import MCP_TOOLS, MCP_RESOURCES
 from tools.handlers import handle_tool_call
-from resources import (
-    get_dictionnaire,
-    get_guide_complet,
-    get_exemples_rappel_faits,
-    get_exemples_discussion,
-    get_exemples_dispositif
-)
+from resources import get_dictionnaire
 
 # Le serveur est lancé pour un seul opérateur : il n'y a ni login ni session à
 # établir. handle_tool_call() conserve un paramètre positionnel user_id ; une
@@ -75,8 +69,7 @@ def handle_initialize(params):
         "protocolVersion": protocol_version,
         "capabilities": {
             "tools": {"enabled": True, "list": True, "call": True},
-            "resources": {"enabled": True, "list": True, "read": True},
-            "prompts": {"enabled": True, "list": True, "get": True}
+            "resources": {"enabled": True, "list": True, "read": True}
         },
         "serverInfo": {"name": "Légifrance MCP", "version": "2.0.0"}
     }
@@ -101,10 +94,6 @@ def handle_resources_read(params):
 
     content_map = {
         "resource://dictionnaire-juridique": get_dictionnaire,
-        "resource://guide-conclusions": get_guide_complet,
-        "resource://exemples-rappel-faits": get_exemples_rappel_faits,
-        "resource://exemples-discussion": get_exemples_discussion,
-        "resource://exemples-dispositif": get_exemples_dispositif,
     }
 
     getter = content_map.get(uri)
@@ -126,20 +115,6 @@ def handle_resources_read(params):
     }
 
 
-def handle_prompts_list(params):
-    return {"prompts": MCP_PROMPTS}
-
-
-def handle_prompts_get(params):
-    return {
-        "description": "Workflow de génération de conclusions",
-        "messages": [{
-            "role": "user",
-            "content": {"type": "text", "text": "Démarrer le workflow de conclusions"}
-        }]
-    }
-
-
 def handle_ping(params):
     # N'existait pas côté HTTP (le endpoint /health jouait ce rôle) mais fait
     # partie du protocole MCP stdio standard pour les vérifications de vie.
@@ -152,8 +127,6 @@ HANDLERS = {
     "tools/call": lambda p: handle_tools_call(p, LOCAL_USER_ID),
     "resources/list": lambda p: handle_resources_list(p),
     "resources/read": lambda p: handle_resources_read(p),
-    "prompts/list": lambda p: handle_prompts_list(p),
-    "prompts/get": lambda p: handle_prompts_get(p),
     "ping": lambda p: handle_ping(p),
 }
 

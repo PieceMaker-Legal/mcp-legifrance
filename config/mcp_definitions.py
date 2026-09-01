@@ -588,42 +588,6 @@ MCP_RESOURCES = [
         "name": "Dictionnaire juridique",
         "description": "Définitions et terminologie juridique française",
         "mimeType": "text/markdown"
-    },
-    {
-        "uri": "resource://guide-conclusions",
-        "name": "Guide de rédaction des conclusions",
-        "description": "Guide complet pour rédiger des conclusions juridiques",
-        "mimeType": "text/markdown"
-    },
-    {
-        "uri": "resource://exemples-rappel-faits",
-        "name": "Exemples de rappel des faits",
-        "description": "Exemples de rédaction de rappel des faits",
-        "mimeType": "text/markdown"
-    },
-    {
-        "uri": "resource://exemples-discussion",
-        "name": "Exemples de discussion",
-        "description": "Exemples de rédaction de discussion juridique",
-        "mimeType": "text/markdown"
-    },
-    {
-        "uri": "resource://exemples-dispositif",
-        "name": "Exemples de dispositif",
-        "description": "Exemples de rédaction de dispositif",
-        "mimeType": "text/markdown"
-    }
-]
-
-# ============================================================================
-# PROMPTS MCP
-# ============================================================================
-
-MCP_PROMPTS = [
-    {
-        "name": "workflow_conclusions",
-        "description": "Workflow complet de génération de conclusions",
-        "arguments": []
     }
 ]
 
