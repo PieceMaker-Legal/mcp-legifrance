@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "legifrance": {
+      "command": "${PYTHON_PATH:-python3}",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/launcher.py"]
+    }
+  }
+}
+
