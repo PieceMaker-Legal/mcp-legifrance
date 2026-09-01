@@ -462,6 +462,8 @@ def handle_consulter_article(args: Dict[str, Any], user_id: str) -> Dict[str, An
 
         summary_parts.extend([
             f"Validité: {date_debut_str} → {date_fin_str}",
+            f"Identifiant: {article_id}",
+            f"Lien: {LEGIFRANCE_BASE_URL}/codes/article_lc/{article_id}",
             "",
             texte if texte else "_Texte non disponible_"
         ])
@@ -1411,20 +1413,28 @@ def handle_search_code(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     # Parser la query pour détecter références d'articles et opérateurs
     operateur_query, type_recherche, criteres_parsed, type_champ = parse_code_query(query)
 
+    # Date de version : CODE_DATE exige ce filtre pour ne retourner que les
+    # articles applicables à la date demandée. Sans filtre, l'API mélange les
+    # versions historiques d'un même numéro d'article.
+    date_version = args.get("date") or datetime.now().strftime("%Y-%m-%d")
+    try:
+        datetime.strptime(date_version, "%Y-%m-%d")
+    except (TypeError, ValueError):
+        return create_response(
+            "❌ **Date de vigueur invalide**\n\n"
+            "Utilisez le format YYYY-MM-DD (par exemple 2020-01-15).",
+            is_error=True
+        )
+
     # Pagination et tri
-    sort = "PERTINENCE"  # Fixé sur PERTINENCE
+    sort = args.get("sort", "PERTINENCE")
     page_size = args.get("page_size", 10)
     page_number = args.get("page_number", 1)
 
-    # Construction des filtres
-    filtres = []
-
-    # Filtre CODE (nom du code)
-    codes = args.get("CODE", [])
-    if codes:
-        # Note: basé sur les tests API, le filtre CODE peut causer des erreurs 500
-        # On va plutôt chercher le nom du code dans la query si possible
-        pass
+    filtres = [{
+        "facette": "DATE_VERSION",
+        "singleDate": date_version
+    }]
 
     try:
         # Appel API avec critères parsés
@@ -1432,7 +1442,7 @@ def handle_search_code(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
             fond="CODE_DATE",
             criteres=criteres_parsed,
             operateur=operateur_query,
-            filtres=filtres if filtres else None,
+            filtres=filtres,
             type_champ=type_champ,
             page_number=page_number,
             page_size=page_size,
@@ -1447,6 +1457,7 @@ def handle_search_code(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
         summary_parts = [
             f"**Requête:** {query}",
             f"**Type recherche:** {type_recherche} ({type_champ})",
+            f"**Date de vigueur:** {date_version}",
             f"**Total:** {total:,} résultats".replace(',', ' '),
             f"**Affichés:** {len(resultats)}",
             f""
@@ -1466,9 +1477,10 @@ def handle_search_code(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
 
             summary_parts.append(f"**{i}. {titre_code}**")
 
-            # Extraire les articles trouvés dans les sections
+            # L'API CODE_DATE place les articles dans sections[].extracts[].
+            # Leur texte d'aperçu se trouve dans `values`, et non dans `text`.
             if sections:
-                for section in sections[:2]:  # Max 2 sections par résultat
+                for section in sections:
                     section_title = section.get("title", "")
                     extracts = section.get("extracts", [])
 
@@ -1477,20 +1489,37 @@ def handle_search_code(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
                         clean_title = section_title.replace("<mark>", "**").replace("</mark>", "**")
                         summary_parts.append(f"   📖 {clean_title}")
 
-                    for extract in extracts[:3]:  # Max 3 articles par section
-                        article_num = extract.get("title", "")
+                    for extract in extracts:
+                        article_num = extract.get("title") or extract.get("num", "")
                         article_id = extract.get("id", "")
+                        article_values = extract.get("values") or []
+                        if isinstance(article_values, str):
+                            article_values = [article_values]
                         article_text = extract.get("text", "")
+                        statut = extract.get("legalStatus", "")
+                        date_debut = str(extract.get("dateDebut") or "")[:10]
+                        date_fin = str(extract.get("dateFin") or "")[:10]
 
                         if article_num:
                             summary_parts.append(f"   • Article {article_num}")
 
+                        metadata = []
+                        if statut:
+                            metadata.append(statut)
+                        if date_debut:
+                            validite = f"depuis le {date_debut}"
+                            if date_fin and not date_fin.startswith("2999-"):
+                                validite += f" jusqu'au {date_fin}"
+                            metadata.append(validite)
+                        if metadata:
+                            summary_parts.append(f"     {' · '.join(metadata)}")
+
                         if article_id:
                             summary_parts.append(f"     🔗 https://www.legifrance.gouv.fr/codes/article_lc/{article_id}")
 
-                        if article_text:
-                            # Nettoyer les balises <mark> dans le texte
-                            clean_text = article_text.replace("<mark>", "**").replace("</mark>", "**")
+                        apercus = article_values or ([article_text] if article_text else [])
+                        for apercu in apercus:
+                            clean_text = str(apercu).replace("<mark>", "**").replace("</mark>", "**")
                             summary_parts.append(f"     {clean_text}")
 
             summary_parts.append("")

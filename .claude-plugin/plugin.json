@@ -1,6 +1,6 @@
 {
   "name": "piecemaker",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Accès MCP autonome aux sources juridiques officielles françaises via Légifrance et PISTE.",
   "author": {
     "name": "PieceMaker Legal"
@@ -8,4 +8,3 @@
   "homepage": "https://github.com/PieceMaker-Legal/mcp-legifrance",
   "repository": "https://github.com/PieceMaker-Legal/mcp-legifrance"
 }
-

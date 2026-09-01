@@ -40,7 +40,8 @@ sans identifiants ; seuls les appels réseau les exigent.
 
 - recherche jurisprudentielle : Cour de cassation, cours d'appel, Conseil
   d'État, CAA et première instance ;
-- recherche dans les codes et consultation du texte intégral d'une décision ;
+- recherche dans les codes à une date de vigueur donnée, consultation du texte
+  intégral d'un article identifié et consultation du texte intégral d'une décision ;
 - suivi BODACC par SIREN ;
 - téléchargement déterministe d'une requête ;
 - construction et validation d'un corpus jurisprudentiel exhaustif sans RAG,
@@ -61,4 +62,3 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
 
 Les tests sont hors réseau. Ne jamais versionner `.env`, jetons, corpus
 téléchargés, journaux ou rapports juridiques générés.
-

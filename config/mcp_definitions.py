@@ -376,6 +376,21 @@ NOTE: Incluez le nom du code dans la query pour cibler un code spécifique (ex: 
             "required": ["query"]
         }
     },
+    {
+        "name": "consulter_article",
+        "description": "Consulte le texte intégral et les informations de vigueur d'une version précise d'article à partir de son identifiant officiel Légifrance LEGIARTI.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "article_id": {
+                    "type": "string",
+                    "pattern": "^LEGIARTI[0-9]+$",
+                    "description": "Identifiant technique officiel de la version d'article, par exemple LEGIARTI000036762052. Cet identifiant est fourni par Search_Code."
+                }
+            },
+            "required": ["article_id"]
+        }
+    },
         {
             "name": "consulter_decision",
             "description": "Get Jurisprudence content with Legifrance API & return result with link https://www.legifrance.gouv.fr/juri/id/{text_id}",
