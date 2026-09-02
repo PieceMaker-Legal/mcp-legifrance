@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -92,6 +93,48 @@ class StdioServerTest(unittest.TestCase):
             "id": None,
             "error": {"code": -32600, "message": "Invalid Request"},
         })
+
+    def test_json_non_objet_est_une_requete_invalide(self):
+        for data in ([], "bonjour", 42, True, None):
+            with self.subTest(data=data):
+                self.assertEqual(process_request(data), {
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32600, "message": "Invalid Request"},
+                })
+
+    def test_processus_rejete_les_json_non_objets_sans_reponse_aux_notifications(self):
+        environment = os.environ.copy()
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        input_lines = [
+            "[]",
+            '"bonjour"',
+            "42",
+            "true",
+            "null",
+            '{"jsonrpc":"2.0","method":"ping"}',
+            "{",
+        ]
+        completed = subprocess.run(
+            [sys.executable, "mcp_stdio_server.py"],
+            cwd=ROOT,
+            env=environment,
+            input="\n".join(input_lines) + "\n",
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        responses = [json.loads(line) for line in completed.stdout.splitlines()]
+
+        self.assertNotIn("Traceback", completed.stderr)
+        self.assertEqual(responses[:5], [{
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": {"code": -32600, "message": "Invalid Request"},
+        }] * 5)
+        self.assertEqual(responses[5]["id"], None)
+        self.assertEqual(responses[5]["error"]["code"], -32700)
+        self.assertEqual(len(responses), 6)
 
     def test_method_non_chaine_est_une_requete_invalide(self):
         for method in (None, 42, []):

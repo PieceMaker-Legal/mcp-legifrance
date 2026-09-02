@@ -141,6 +141,13 @@ def process_request(data):
     Retourne un dict de réponse JSON-RPC, ou None si aucune réponse ne doit
     être émise (notification sans clé ``id``).
     """
+    # JSON-RPC exige un objet au niveau racine. ``json.loads`` accepte aussi
+    # les tableaux et les scalaires JSON : ils doivent être signalés comme
+    # requêtes invalides, et non déclencher une AttributeError interne.
+    if not isinstance(data, dict):
+        logger.error("Invalid JSON-RPC request: expected an object")
+        return jsonrpc_error(None, -32600, "Invalid Request")
+
     if data.get("jsonrpc") != "2.0":
         logger.error(f"Invalid JSON-RPC version: {data.get('jsonrpc')}")
         return jsonrpc_error(data.get("id"), -32600, "Invalid jsonrpc version")
