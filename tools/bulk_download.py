@@ -223,9 +223,11 @@ def download_query_results(args):
 
     # Pagination jusqu'au plafond.
     collected = []
-    total = 0
+    total = None
+    total_api_connu = False
     page = 1
     while len(collected) < max_results:
+        requested_page_size = min(PAGE_SIZE, max_results - len(collected))
         result = legifrance_client.search_with_criteres(
             fond=config["fond"],
             criteres=criteres_parsed,
@@ -233,15 +235,28 @@ def download_query_results(args):
             filtres=filtres,
             type_champ="ALL",
             page_number=page,
-            page_size=PAGE_SIZE,
+            page_size=requested_page_size,
             sort="PERTINENCE",
         )
-        total = result.get("totalResultNumber", 0)
         batch = result.get("results", []) or []
+        reported_total = result.get("totalResultNumber")
+        try:
+            parsed_total = int(reported_total) if reported_total is not None else None
+        except (TypeError, ValueError):
+            parsed_total = None
+        # Un zéro n'est fiable que pour une réponse vide. Une page non vide
+        # accompagnée d'un total nul doit rester traitée comme un total absent.
+        if parsed_total is not None and (parsed_total > 0 or not batch):
+            total = parsed_total
+            total_api_connu = True
         if not batch:
             break
         collected.extend(batch)
-        if len(collected) >= total or len(batch) < PAGE_SIZE:
+        if len(collected) >= max_results:
+            break
+        if len(batch) < requested_page_size:
+            break
+        if total_api_connu and len(collected) >= total:
             break
         page += 1
 
@@ -275,7 +290,11 @@ def download_query_results(args):
         "",
         f"- **Requête** : {query}",
         f"- **Période** : {date_debut} → {date_fin}",
-        f"- **Total API** : {total}",
+        (
+            f"- **Total API** : {total}"
+            if total_api_connu else
+            "- **Total API** : inconnu (totalResultNumber absent ou nul)"
+        ),
         f"- **Téléchargés** : {len(entries)}",
         "",
         "| # | Décision | Date | Fichier |",
@@ -295,12 +314,16 @@ def download_query_results(args):
     with open(os.path.join(folder, "results.json"), "w", encoding="utf-8") as fh:
         json.dump(entries, fh, ensure_ascii=False, indent=2)
 
-    truncated = len(entries) < total
+    truncated = (
+        len(entries) < total
+        if total_api_connu else len(collected) >= max_results
+    )
     marker = {
         "kind": "legifrance-results",
         "query": query,
         "juridiction": juridiction,
         "total": total,
+        "total_api_connu": total_api_connu,
         "downloaded": len(entries),
         "truncated": truncated,
         "solution_enriched": solution_enriched,
@@ -313,6 +336,7 @@ def download_query_results(args):
     return {
         "folder": folder,
         "total": total,
+        "total_api_connu": total_api_connu,
         "downloaded": len(entries),
         "truncated": truncated,
         "solution_enriched": solution_enriched,

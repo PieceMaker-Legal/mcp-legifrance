@@ -135,11 +135,13 @@ def _search_query(
     operator, _search_type, criteria = parse_query(query)
     filters = list(config["filtres"]) + _date_filter(date_debut, date_fin)
     collected: List[Dict[str, Any]] = []
-    total = 0
+    total = None
+    total_api_connu = False
     page = 1
     calls = 0
 
     while len(collected) < max_results:
+        requested_page_size = min(PAGE_SIZE, max_results - len(collected))
         response = client.search_with_criteres(
             fond=config["fond"],
             criteres=criteria,
@@ -147,26 +149,44 @@ def _search_query(
             filtres=filters,
             type_champ="ALL",
             page_number=page,
-            page_size=PAGE_SIZE,
+            page_size=requested_page_size,
             sort="PERTINENCE",
         )
         calls += 1
-        total = int(response.get("totalResultNumber") or 0)
         batch = response.get("results") or []
+        reported_total = response.get("totalResultNumber")
+        try:
+            parsed_total = int(reported_total) if reported_total is not None else None
+        except (TypeError, ValueError):
+            parsed_total = None
+        # Un zéro n'est fiable que pour une réponse vide. Une page non vide
+        # accompagnée d'un total nul doit rester traitée comme un total absent.
+        if parsed_total is not None and (parsed_total > 0 or not batch):
+            total = parsed_total
+            total_api_connu = True
         if not batch:
             break
         collected.extend(batch)
-        if len(collected) >= total or len(batch) < PAGE_SIZE:
+        if len(collected) >= max_results:
+            break
+        if len(batch) < requested_page_size:
+            break
+        if total_api_connu and len(collected) >= total:
             break
         page += 1
 
     returned = collected[:max_results]
+    tronquee = (
+        len(returned) < total
+        if total_api_connu else len(returned) >= max_results
+    )
     return returned, {
         "query": query,
         "juridiction": jurisdiction,
         "total_api": total,
+        "total_api_connu": total_api_connu,
         "collectes": len(returned),
-        "tronquee": len(returned) < total,
+        "tronquee": tronquee,
         "appels_recherche": calls,
     }
 
