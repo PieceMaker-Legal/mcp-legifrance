@@ -4,6 +4,7 @@
 
 import json
 import os
+import unicodedata
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
 
@@ -483,6 +484,76 @@ def handle_consulter_article(args: Dict[str, Any], user_id: str) -> Dict[str, An
 # NOUVEAUX HANDLERS - RECHERCHE JURISPRUDENCE OPTIMISÉE
 # ============================================================================
 
+# Matières juridiques exposées par les outils de recherche Cour de cassation,
+# mappées sur la facette officielle CASSATION_FORMATION du fonds JURI. Les
+# formations transversales (assemblée plénière, chambre mixte, chambres
+# réunies, avis) restent jointes à chaque matière : elles statuent sur toutes.
+FORMATIONS_TRANSVERSALES = [
+    "ASSEMBLEE_PLENIERE",
+    "CHAMBRE_MIXTE",
+    "CHAMBRES_REUNIES",
+    "AVIS",
+]
+
+MATIERES_CASSATION = {
+    "CIVIL": ["CHAMBRE_CIVILE_1", "CHAMBRE_CIVILE_2", "CHAMBRE_CIVILE_3", "CHAMBRE_CIVILE"],
+    "COMMERCIAL": ["CHAMBRE_COMMERCIALE"],
+    "PENAL": ["CHAMBRE_CRIMINELLE"],
+    "SOCIAL": ["CHAMBRE_SOCIALE"],
+}
+
+
+def formations_cassation(matiere):
+    """
+    Normalise l'argument `matiere` et rend (matières retenues, formations API).
+
+    Le filtre est obligatoire : sans lui, une recherche renvoie les décisions
+    de toutes les chambres, y compris la chambre criminelle sur une question
+    purement civile ou commerciale. `TOUTES` n'est donc plus accepté : pour
+    couvrir l'ensemble des chambres, il faut énumérer les quatre matières.
+    """
+    if matiere is None:
+        demandees = []
+    elif isinstance(matiere, str):
+        demandees = [m.strip() for m in matiere.split(",")]
+    elif isinstance(matiere, (list, tuple)):
+        demandees = [str(m).strip() for m in matiere]
+    else:
+        demandees = []
+
+    demandees = [m.upper() for m in demandees if m]
+    connues = ", ".join(MATIERES_CASSATION)
+
+    if not demandees:
+        raise ValueError(
+            "Filtre `matiere` obligatoire : indiquez au moins une matière parmi "
+            f"{connues}.\n"
+            "Sans ce filtre, la recherche renvoie toutes les chambres, y compris "
+            "la chambre criminelle sur une question civile ou commerciale.\n"
+            "Pour couvrir volontairement toutes les chambres, énumérez les "
+            "quatre matières."
+        )
+
+    inconnues = [m for m in demandees if m not in MATIERES_CASSATION]
+    if inconnues:
+        raise ValueError(
+            f"Matière(s) inconnue(s) : {', '.join(inconnues)}. "
+            f"Valeurs acceptées : {connues}."
+        )
+
+    retenues = []
+    formations = []
+    for m in demandees:
+        if m in retenues:
+            continue
+        retenues.append(m)
+        for formation in MATIERES_CASSATION[m]:
+            if formation not in formations:
+                formations.append(formation)
+    formations.extend(FORMATIONS_TRANSVERSALES)
+    return retenues, formations
+
+
 def handle_search_cour_cassation(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     """Recherche Cour de cassation avec parsing intelligent de la query"""
 
@@ -520,22 +591,18 @@ def handle_search_cour_cassation(args: Dict[str, Any], user_id: str) -> Dict[str
         }
     ]
 
-    # Filtre MATIERE → mapper vers formations API
-    matiere = args.get("matiere", "TOUTES")
-    if matiere != "TOUTES":
-        # Mapping des matières simples vers les formations Cour de cassation
-        mapping_matieres = {
-            "CIVIL": ["CHAMBRE_CIVILE_1", "CHAMBRE_CIVILE_2", "CHAMBRE_CIVILE_3", "CHAMBRE_CIVILE", "ASSEMBLEE_PLENIERE", "CHAMBRE_MIXTE", "CHAMBRES_REUNIES", "AVIS"],
-            "COMMERCIAL": ["CHAMBRE_COMMERCIALE", "ASSEMBLEE_PLENIERE", "CHAMBRE_MIXTE", "CHAMBRES_REUNIES", "AVIS"],
-            "PENAL": ["CHAMBRE_CRIMINELLE", "ASSEMBLEE_PLENIERE", "CHAMBRE_MIXTE", "CHAMBRES_REUNIES", "AVIS"],
-            "SOCIAL": ["CHAMBRE_SOCIALE", "ASSEMBLEE_PLENIERE", "CHAMBRE_MIXTE", "CHAMBRES_REUNIES", "AVIS"]
-        }
-        formations_api = mapping_matieres.get(matiere, [])
-        if formations_api:
-            filtres.append({
-                "facette": "CASSATION_FORMATION",
-                "valeurs": formations_api
-            })
+    # Filtre MATIERE (obligatoire) → formations Cour de cassation
+    try:
+        matieres, formations_api = formations_cassation(args.get("matiere"))
+    except ValueError as erreur:
+        return create_response(
+            f"<tool-use-error>\n{erreur}\n</tool-use-error>",
+            is_error=True
+        )
+    filtres.append({
+        "facette": "CASSATION_FORMATION",
+        "valeurs": formations_api
+    })
 
     # Filtre PUBLICATION
     publication = args.get("CASSATION_TYPE_PUBLICATION_BULLETIN", "TOUS")
@@ -577,7 +644,7 @@ def handle_search_cour_cassation(args: Dict[str, Any], user_id: str) -> Dict[str
                 is_error=True
             )
 
-        matiere_str = matiere if matiere != "TOUTES" else "TOUTES"
+        matiere_str = ", ".join(matieres)
 
         summary_parts = [
             f"**🏛️ COUR DE CASSATION**",
@@ -1259,6 +1326,97 @@ def handle_search_caa(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
         )
 
 
+FAMILLES_PREMIER_DEGRE = {
+    "TRIBUNAL_JUDICIAIRE": ["tribunal judiciaire"],
+    "TRIBUNAL_GRANDE_INSTANCE": ["tribunal de grande instance"],
+    "TRIBUNAL_INSTANCE": ["tribunal d'instance"],
+    "TRIBUNAL_COMMERCE": ["tribunal de commerce"],
+    "CONSEIL_PRUDHOMMES": ["conseil de prud'hommes", "conseil des prud'hommes"],
+    "TRIBUNAL_CORRECTIONNEL": ["tribunal correctionnel"],
+    "TRIBUNAL_SECURITE_SOCIALE": [
+        "tribunal des affaires de securite sociale",
+        "trib. des affaires de securite sociale",
+    ],
+    "TRIBUNAL_BAUX_RURAUX": ["tribunal paritaire des baux ruraux"],
+    "JURIDICTION_PROXIMITE": ["juridiction de proximite", "juge de proximite"],
+    "OUTRE_MER": [
+        "tribunal de premiere instance",
+        "tribunal superieur d'appel",
+        "chambre de l'application des peines",
+    ],
+    "TRIBUNAL_CONFLITS": ["tribunal_conflit", "tribunal des conflits"],
+}
+
+
+def _sans_accents(texte):
+    """Minuscule sans accents, pour comparer les libelles de la facette."""
+    decompose = unicodedata.normalize("NFD", texte.lower())
+    return "".join(c for c in decompose if unicodedata.category(c) != "Mn")
+
+
+def familles_premier_degre(argument):
+    """
+    Normalise l'argument `PREMIER_DEGRE_TYPE_JURIDICTION` et rend la liste des
+    familles demandees. Leve ValueError si le filtre est absent ou inconnu.
+
+    En premiere instance, la matiere est portee par le nom de la juridiction :
+    sans ce filtre, une recherche sociale remonte du correctionnel et du
+    commercial. Le filtre est donc obligatoire, comme la matiere en cassation.
+    """
+    if argument is None:
+        demandees = []
+    elif isinstance(argument, str):
+        demandees = [argument]
+    elif isinstance(argument, (list, tuple)):
+        demandees = [str(a) for a in argument]
+    else:
+        demandees = []
+
+    demandees = [a.strip().upper() for a in demandees if str(a).strip()]
+    connues = ", ".join(FAMILLES_PREMIER_DEGRE)
+
+    if not demandees:
+        raise ValueError(
+            "Filtre `PREMIER_DEGRE_TYPE_JURIDICTION` obligatoire : indiquez au "
+            f"moins une famille parmi {connues}.\n"
+            "En premiere instance, la matiere est portee par le nom de la "
+            "juridiction : sans ce filtre, la recherche melange prud'hommes, "
+            "correctionnel et commerce."
+        )
+
+    inconnues = [a for a in demandees if a not in FAMILLES_PREMIER_DEGRE]
+    if inconnues:
+        raise ValueError(
+            f"Famille(s) inconnue(s) : {', '.join(inconnues)}. "
+            f"Valeurs acceptees : {connues}."
+        )
+
+    retenues = []
+    for a in demandees:
+        if a not in retenues:
+            retenues.append(a)
+    return retenues
+
+
+def valeurs_premier_degre(familles, valeurs_facette):
+    """
+    Etend les familles demandees aux libelles reels de la facette officielle
+    PREMIER_DEGRE_TYPE_JURIDICTION, qui mele libelles generiques
+    ("Conseil de prud'hommes") et libelles par ville ("Tribunal correctionnel
+    de Nice"). Rend la liste des libelles a envoyer a l'API.
+    """
+    prefixes = []
+    for famille in familles:
+        prefixes.extend(FAMILLES_PREMIER_DEGRE[famille])
+
+    retenus = []
+    for libelle in valeurs_facette:
+        normalise = _sans_accents(libelle)
+        if any(normalise.startswith(p) for p in prefixes) and libelle not in retenus:
+            retenus.append(libelle)
+    return retenus
+
+
 def handle_search_premiere_instance(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     """Recherche première instance avec parsing intelligent de la query"""
 
@@ -1303,15 +1461,54 @@ def handle_search_premiere_instance(args: Dict[str, Any], user_id: str) -> Dict[
         }
     ]
 
-    # Filtre PREMIER_DEGRE_TYPE_JURIDICTION
-    types_jur = args.get("PREMIER_DEGRE_TYPE_JURIDICTION", [])
-    if types_jur:
-        filtres.append({
-            "facette": "PREMIER_DEGRE_TYPE_JURIDICTION",
-            "valeurs": types_jur
-        })
+    # Filtre PREMIER_DEGRE_TYPE_JURIDICTION (obligatoire)
+    try:
+        familles = familles_premier_degre(args.get("PREMIER_DEGRE_TYPE_JURIDICTION"))
+    except ValueError as erreur:
+        return create_response(
+            f"<tool-use-error>\n{erreur}\n</tool-use-error>",
+            is_error=True
+        )
 
     try:
+        # La facette officielle mele libelles generiques et libelles par ville :
+        # on lit ses valeurs reelles pour la requete en cours, puis on etend les
+        # familles demandees. Sans cette etape, "Tribunal correctionnel" ne
+        # remonterait pas "Tribunal correctionnel de Nice".
+        sonde = legifrance_client.search_with_criteres(
+            fond="JURI",
+            criteres=criteres_parsed,
+            operateur=operateur_query,
+            filtres=filtres,
+            type_champ=type_champ,
+            page_number=1,
+            page_size=1,
+            sort=sort
+        )
+        valeurs_facette = []
+        for facette in sonde.get("facets") or []:
+            if facette.get("facetElem") == "PREMIER_DEGRE_TYPE_JURIDICTION":
+                valeurs_facette = list((facette.get("values") or {}).keys())
+                break
+
+        libelles = valeurs_premier_degre(familles, valeurs_facette)
+        if not libelles:
+            return create_response(
+                f"**📋 JURIDICTIONS DE PREMIÈRE INSTANCE**\n\n"
+                f"**Requête:** {query}\n"
+                f"**Famille(s):** {', '.join(familles)}\n"
+                f"**Période:** {date_debut} → {date_fin}\n\n"
+                f"Aucune décision de ces juridictions ne correspond à cette "
+                f"requête sur cette période.\n"
+                f"La recherche n'a pas été élargie aux autres juridictions du "
+                f"premier degré."
+            )
+
+        filtres.append({
+            "facette": "PREMIER_DEGRE_TYPE_JURIDICTION",
+            "valeurs": libelles
+        })
+
         result = legifrance_client.search_with_criteres(
             fond="JURI",
             criteres=criteres_parsed,
@@ -1339,7 +1536,7 @@ def handle_search_premiere_instance(args: Dict[str, Any], user_id: str) -> Dict[
                 is_error=True
             )
 
-        types_str = ", ".join(types_jur) if types_jur else "TOUTES"
+        types_str = ", ".join(familles)
 
         summary_parts = [
             f"**📋 JURIDICTIONS DE PREMIÈRE INSTANCE**",

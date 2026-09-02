@@ -38,10 +38,13 @@ NOTE: Les références d'articles (L.1234-1, R.1234-2, D.1234-3) sont automatiqu
 Le système parse automatiquement et optimise la requête."""
                 },
                 "matiere": {
-                    "type": "string",
-                    "enum": ["TOUTES", "CIVIL", "COMMERCIAL", "PENAL", "SOCIAL"],
-                    "default": "TOUTES",
-                    "description": "Matière juridique: CIVIL (contrats, famille, immobilier), COMMERCIAL (sociétés), PENAL (criminel), SOCIAL (travail)"
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["CIVIL", "COMMERCIAL", "PENAL", "SOCIAL"]
+                    },
+                    "minItems": 1,
+                    "description": "OBLIGATOIRE. Matière(s) de la question posée, appliquée(s) à la facette officielle des formations (chambres) de la Cour de cassation. CIVIL (contrats, famille, immobilier, responsabilité civile), COMMERCIAL (sociétés, dirigeants, procédures collectives, concurrence), PENAL (chambre criminelle), SOCIAL (travail, sécurité sociale). Les formations transversales (assemblée plénière, chambre mixte, chambres réunies, avis) sont toujours incluses. Sans ce filtre la recherche mélange toutes les chambres: une question de révocation de dirigeant remonterait des arrêts criminels. Plusieurs matières sont possibles quand la question est réellement mixte (ex: [\"CIVIL\", \"COMMERCIAL\"]); n'énumérez les quatre que pour balayer volontairement toute la Cour."
                 },
                 "CASSATION_TYPE_PUBLICATION_BULLETIN": {
                     "type": "string",
@@ -69,12 +72,12 @@ Le système parse automatiquement et optimise la requête."""
                     "default": 1
                 }
             },
-            "required": ["query"]
+            "required": ["query", "matiere"]
         }
     },
     {
         "name": "Search_Cour_Appel",
-        "description": "Recherche dans la jurisprudence des COURS D'APPEL avec parsing intelligent. Volume important: bien cibler avec ville + dates.",
+        "description": "Recherche dans la jurisprudence des COURS D'APPEL avec parsing intelligent. Volume important: bien cibler avec ville + dates. Le fonds JURI n'expose AUCUNE facette de matière ni de chambre pour les cours d'appel (contrairement à la Cour de cassation): le ciblage par matière passe donc uniquement par des mots-clés ou un article visé dans la query. Vérifié sur la table officielle DILA des tris et filtres (voir docs/facettes-officielles-dila.md): seul APPEL_SIEGE_APPEL (la ville) existe pour ce degré.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -125,7 +128,7 @@ Exemples: "divorce prestation compensatoire", "L. 229" ET "prestation", "L. 373-
     },
     {
         "name": "Search_Conseil_Etat",
-        "description": "Recherche ciblée dans la jurisprudence du CONSEIL D'ÉTAT avec parsing intelligent de la query.",
+        "description": "Recherche ciblée dans la jurisprudence du CONSEIL D'ÉTAT avec parsing intelligent de la query. Le fonds CETAT n'expose pas de facette de matière ni de chambre (table officielle DILA des tris et filtres, voir docs/facettes-officielles-dila.md): le ciblage passe par la query.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -181,7 +184,7 @@ NOTE: Les références d'articles sont automatiquement normalisées."""
     },
     {
         "name": "Search_CAA",
-        "description": "Recherche dans la jurisprudence des COURS ADMINISTRATIVES D'APPEL avec parsing intelligent. Permet de filtrer par ville de la CAA.",
+        "description": "Recherche dans la jurisprudence des COURS ADMINISTRATIVES D'APPEL avec parsing intelligent. Permet de filtrer par ville de la CAA. Le fonds CETAT n'expose pas de facette de matière ni de chambre (table officielle DILA des tris et filtres, voir docs/facettes-officielles-dila.md); le filtre de ville est appliqué côté client à partir du titre des décisions.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -238,7 +241,7 @@ Exemples: "permis de construire", "L. 421-6" ET "urbanisme", "refus titre séjou
     },
     {
         "name": "Search_Premiere_Instance",
-        "description": "Recherche dans la jurisprudence des JURIDICTIONS DE PREMIÈRE INSTANCE. Volume très limité dans la base (~50 décisions). Query automatiquement optimisée (opérateur OU, au moins un mot - car volume faible).",
+        "description": "Recherche dans la jurisprudence des JURIDICTIONS DE PREMIÈRE INSTANCE. Volume très limité dans la base (~2000 décisions). Query automatiquement optimisée (opérateur OU, au moins un mot - car volume faible). À ce degré, la matière est portée par le NOM de la juridiction et non par une chambre: le filtre PREMIER_DEGRE_TYPE_JURIDICTION est donc OBLIGATOIRE (table officielle DILA des tris et filtres, voir docs/facettes-officielles-dila.md).",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -269,9 +272,34 @@ Les références d'articles (L., R., D.) sont automatiquement normalisées."""
                     "type": "array",
                     "items": {
                         "type": "string",
-                        "enum": ["Tribunal de grande instance", "Tribunal judiciaire de Paris", "Conseil de prud'hommes", "Chambre de l'application des peines du TSA de St Pierre"]
+                        "enum": [
+                            "TRIBUNAL_JUDICIAIRE",
+                            "TRIBUNAL_GRANDE_INSTANCE",
+                            "TRIBUNAL_INSTANCE",
+                            "TRIBUNAL_COMMERCE",
+                            "CONSEIL_PRUDHOMMES",
+                            "TRIBUNAL_CORRECTIONNEL",
+                            "TRIBUNAL_SECURITE_SOCIALE",
+                            "TRIBUNAL_BAUX_RURAUX",
+                            "JURIDICTION_PROXIMITE",
+                            "OUTRE_MER",
+                            "TRIBUNAL_CONFLITS"
+                        ]
                     },
-                    "description": "Type de juridiction de première instance"
+                    "minItems": 1,
+                    "description": """OBLIGATOIRE. Famille(s) de juridictions du premier degre. A ce degre, c'est le nom de la juridiction qui porte la matiere: sans ce filtre la recherche melange prud'hommes, correctionnel et commerce.
+
+Correspondance matiere -> famille:
+- civil general: TRIBUNAL_JUDICIAIRE, TRIBUNAL_GRANDE_INSTANCE, TRIBUNAL_INSTANCE
+- commercial: TRIBUNAL_COMMERCE
+- social: CONSEIL_PRUDHOMMES, TRIBUNAL_SECURITE_SOCIALE
+- penal: TRIBUNAL_CORRECTIONNEL
+- baux ruraux: TRIBUNAL_BAUX_RURAUX
+- petits litiges (juridictions et juges de proximite, supprimes en 2017): JURIDICTION_PROXIMITE
+- Noumea, Papeete, Mamoudzou, Saint-Pierre: OUTRE_MER
+- conflits de competence judiciaire/administratif: TRIBUNAL_CONFLITS
+
+Chaque famille est etendue aux valeurs reelles de la facette officielle PREMIER_DEGRE_TYPE_JURIDICTION, qui mele libelles generiques ("Conseil de prud'hommes") et libelles par ville ("Tribunal correctionnel de Nice")."""
                 },
                 "date_debut": {
                     "type": "string",
@@ -293,7 +321,7 @@ Les références d'articles (L., R., D.) sont automatiquement normalisées."""
                     "default": 1
                 }
             },
-            "required": ["query"]
+            "required": ["query", "PREMIER_DEGRE_TYPE_JURIDICTION"]
         }
     },
     {
