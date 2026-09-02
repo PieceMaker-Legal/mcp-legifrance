@@ -40,8 +40,6 @@ DEFAULT_BATCH_MAX_DECISIONS = 30
 HARD_BATCH_MAX_DECISIONS = 100
 DEFAULT_FETCH_WORKERS = 4
 HARD_FETCH_WORKERS = 8
-CONTEXT_RADIUS = 1_200
-CANDIDATE_PROXIMITY = 300
 
 TOKEN_ESTIMATION_METHOD = "ceil(nombre_de_caracteres_utf8_decodes/4)"
 
@@ -49,26 +47,10 @@ STOPWORDS = {
     "alors", "avec", "cette", "dans", "depuis", "des", "dont", "elle",
     "elles", "entre", "est", "leur", "leurs", "mais", "pour", "que",
     "quel", "quelle", "quelles", "quels", "sans", "sur", "une", "aux",
-    "conditions", "condition", "societe", "societes", "dirigeant",
-    "dirigeants", "decision", "decisions", "jurisprudence",
+    "decision", "decisions", "jurisprudence",
 }
 
-# Filtre booléen volontairement large et auditable. Il ne classe pas les
-# décisions : il sépare seulement les incompatibilités lexicales certaines des
-# textes qui doivent être lus par un modèle bon marché.
-REVOCATION_RE = re.compile(r"\br[eé]vo(?:c|qu)\w*", re.IGNORECASE)
-OFFICER_RE = re.compile(
-    r"\b(?:administrateur|dirigeant|mandataire\s+social|directeur\s+g[eé]n[eé]ral|"
-    r"pr[eé]sident(?:-directeur\s+g[eé]n[eé]ral|\s+du\s+conseil)?|"
-    r"membre\s+du\s+directoire|directoire|conseil\s+de\s+surveillance)\w*",
-    re.IGNORECASE,
-)
-SA_CONTEXT_RE = re.compile(
-    r"soci[eé]t[eé]\s+anonyme|L\.?\s*225[-\s]|"
-    r"loi\s+du\s+24\s+juillet\s+1966",
-    re.IGNORECASE,
-)
-SA_ACRONYM_RE = re.compile(r"\bS\.?\s*A\.?\b")
+
 def estimate_tokens(value: str) -> int:
     """Estimation stable et explicite ; jamais présentée comme usage API exact."""
     return int(math.ceil(len(value or "") / 4))
@@ -275,66 +257,21 @@ def _paragraphs(body: str) -> List[str]:
 
 def _relevant_extracts(record: Dict[str, Any], max_extracts: int = 3) -> List[Dict[str, Any]]:
     terms = list((record.get("termes_trouves") or {}).keys())
-    candidates = []
+    extracts = []
     for index, paragraph in enumerate(_paragraphs(record.get("texte", "")), 1):
         normalized = _normalize(paragraph)
         matches = [term for term in terms if term in normalized]
         if matches:
-            candidates.append((len(matches), index, paragraph, matches))
-    candidates.sort(key=lambda item: (-item[0], item[1]))
+            extracts.append((len(matches), index, paragraph, matches))
+    extracts.sort(key=lambda item: (-item[0], item[1]))
     return [
         {"paragraphe": index, "termes": matches, "texte": paragraph[:800]}
-        for _count, index, paragraph, matches in candidates[:max_extracts]
+        for _count, index, paragraph, matches in extracts[:max_extracts]
     ]
 
 
-def _candidate_spans(body: str) -> List[Tuple[int, int]]:
-    revocations = list(REVOCATION_RE.finditer(body or ""))
-    officers = list(OFFICER_RE.finditer(body or ""))
-    spans = {
-        (min(revocation.start(), officer.start()), max(revocation.end(), officer.end()))
-        for revocation in revocations
-        for officer in officers
-        if abs(revocation.start() - officer.start()) <= CANDIDATE_PROXIMITY
-    }
-    return sorted(spans)
-
-
-def _mapping_candidate(record: Dict[str, Any]) -> Tuple[bool, List[str]]:
-    """Décide sans score si un texte nécessite une lecture sémantique."""
-    body = record.get("texte", "")
-    spans = _candidate_spans(body)
-    checks = {
-        "revocation": bool(REVOCATION_RE.search(body)),
-        "fonction_dirigeante": bool(OFFICER_RE.search(body)),
-        f"proximite_max_{CANDIDATE_PROXIMITY}_caracteres": bool(spans),
-        "contexte_sa": bool(SA_CONTEXT_RE.search(body) or SA_ACRONYM_RE.search(body)),
-    }
-    return all(checks.values()), [name for name, matched in checks.items() if matched]
-
-
-def _context_windows(body: str) -> List[Dict[str, Any]]:
-    """Rend toutes les fenêtres de cooccurrence, fusionnées sans top-k."""
-    intervals = [
-        (max(0, start - CONTEXT_RADIUS), min(len(body), end + CONTEXT_RADIUS))
-        for start, end in _candidate_spans(body)
-    ]
-    if not intervals:
-        return []
-    merged = []
-    for start, end in intervals:
-        if merged and start <= merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
-        else:
-            merged.append((start, end))
-    return [
-        {"debut": start, "fin": end, "texte": body[start:end]}
-        for start, end in merged
-    ]
-
-
-def _candidate_markdown(position: int, record: Dict[str, Any]) -> str:
-    """Paquet compact contenant chaque voisinage lexical pertinent."""
+def _batch_decision_markdown(position: int, record: Dict[str, Any]) -> str:
+    """Rend le texte intégral de chaque décision pour la revue modèle."""
     lines = [
         f"# {position}. {record['titre']}",
         "",
@@ -349,32 +286,11 @@ def _candidate_markdown(position: int, record: Dict[str, Any]) -> str:
         "",
         record.get("sommaire") or "_Absent._",
         "",
-        "## Contextes déterministes exhaustifs",
+        "## Texte intégral",
         "",
+        record.get("texte") or "_Absent._",
     ]
-    for index, window in enumerate(record.get("contextes_cartographie") or [], 1):
-        lines.extend([
-            f"### Contexte {index} — caractères {window['debut']}:{window['fin']}",
-            "",
-            window["texte"],
-            "",
-        ])
     return "\n".join(lines).rstrip() + "\n"
-
-
-def _static_non_candidate_card(record: Dict[str, Any]) -> Dict[str, Any]:
-    """Fiche déterministe d'un texte incompatible avec le filtre large."""
-    return {
-        "id": record["id"],
-        "pertinent": False,
-        "question_juridique": "",
-        "faits_determinants": [],
-        "solution": record.get("solution", ""),
-        "portee": "",
-        "sens": "neutre",
-        "citation_exacte": "",
-        "incertitudes": [],
-    }
 
 
 def _decision_markdown(position: int, record: Dict[str, Any]) -> str:
@@ -412,20 +328,13 @@ def _batch_header(question: str) -> str:
 
 ## Consigne
 
-Lire **chaque candidate** ci-dessous et produire exactement une ligne JSON par
-décision. Les contextes contiennent toutes les fenêtres autour des ancres du
-filtre booléen ; ce n'est ni un classement ni un top-k. En cas d'ambiguïté,
-lire le fichier intégral indiqué. Ne jamais créer d'identifiant ni de citation.
+Lire **chaque décision** ci-dessous et produire exactement une ligne JSON par
+décision. Chaque décision est fournie avec son texte intégral ; ce n'est ni un
+classement ni un top-k. Ne jamais créer d'identifiant ni de citation.
 `citation_exacte` doit reproduire une phrase décisive complète de la Cour, et
 non l'en-tête, les seules prétentions d'une partie ou un fragment coupé. Une
 décision non pertinente doit tout de même produire une fiche avec
 `pertinent: false` et `citation_exacte: ""`.
-
-Le simple fait qu'une partie soit une société anonyme ne suffit pas. La
-question doit réellement concerner la révocation d'un administrateur, d'un
-président/PCA/PDG, d'un directeur général/DGD ou d'un membre du directoire de
-SA. Une SAS, SARL ou rupture de contrat de travail est hors champ, sauf
-comparaison juridique explicite et utile.
 
 Schéma minimal :
 
@@ -529,10 +438,6 @@ def build_research_corpus(args: Dict[str, Any], client: Any = None) -> Dict[str,
     records = [_score_decision(record, terms) for record in records]
     for record in records:
         record["extraits_lexicaux"] = _relevant_extracts(record)
-        candidate, reasons = _mapping_candidate(record)
-        record["candidat_cartographie_modele"] = candidate
-        record["criteres_filtre_trouves"] = reasons
-        record["contextes_cartographie"] = _context_windows(record["texte"]) if candidate else []
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     default_root = os.path.join(os.path.expanduser("~"), ".legifrance-mcp", "research")
@@ -556,18 +461,8 @@ def build_research_corpus(args: Dict[str, Any], client: Any = None) -> Dict[str,
         decision_paths[record["id"]] = relative
         record["fichier"] = relative
 
-    static_cards = [
-        _static_non_candidate_card(record)
-        for record in records
-        if not record["candidat_cartographie_modele"]
-    ]
-    if static_cards:
-        static_cards_path = os.path.join(cards_dir, "static-non-candidates.jsonl")
-        _write_jsonl(static_cards_path, static_cards)
-        files.append(os.path.join("cards", "static-non-candidates.jsonl"))
-
-    # Lots de toutes les candidates booléennes. Le texte n'est jamais retiré
-    # en fonction d'un score ; celui-ci sert seulement à l'index de contrôle.
+    # Chaque texte téléchargé est revu par le modèle. Le score lexical sert
+    # uniquement à l'index de contrôle et ne retire aucune décision des lots.
     batches = []
     current_records = []
     current_parts = []
@@ -598,9 +493,9 @@ def build_research_corpus(args: Dict[str, Any], client: Any = None) -> Dict[str,
         current_parts = []
         current_tokens = estimate_tokens(header)
 
-    candidates = [record for record in records if record["candidat_cartographie_modele"]]
-    for position, record in enumerate(candidates, 1):
-        part = _candidate_markdown(position, record)
+    reviewed_records = records
+    for position, record in enumerate(reviewed_records, 1):
+        part = _batch_decision_markdown(position, record)
         part_tokens = estimate_tokens(part)
         if current_records and (
             current_tokens + part_tokens > target_tokens
@@ -619,11 +514,10 @@ def build_research_corpus(args: Dict[str, Any], client: Any = None) -> Dict[str,
         f"- **Question** : {question}",
         f"- **Décisions identifiées (dédupliquées)** : {len(seeds)}",
         f"- **Décisions dont le texte intégral a été téléchargé et scanné** : {len(records)}",
-        f"- **Candidates revues par modèle** : {len(candidates)}",
-        f"- **Hors champ fermées statiquement** : {len(static_cards)}",
+        f"- **Décisions à revoir par modèle** : {len(reviewed_records)}",
         f"- **Échecs de téléchargement** : {len(failures)}",
         f"- **Lots de cartographie** : {len(batches)}",
-        "- **Classement** : lexical, pour contrôle humain uniquement ; il ne modifie jamais le filtre booléen.",
+        "- **Classement** : lexical, pour contrôle humain uniquement ; il ne modifie jamais les lots.",
         "",
         "| Rang contrôle | Score | Décision | Date | Solution | Fichier |",
         "| ---: | ---: | --- | --- | --- | --- |",
@@ -652,18 +546,7 @@ def build_research_corpus(args: Dict[str, Any], client: Any = None) -> Dict[str,
         "decisions_identifiees_dedoublonnees": len(seeds),
         "decisions_texte_integral_telecharge": len(records),
         "decisions_scannees": len(records),
-        "decisions_candidates_modele": len(candidates),
-        "decisions_fermees_statiquement": len(static_cards),
-        "filtre_candidature": {
-            "operateur": "ET",
-            "criteres": [
-                "revocation", "fonction_dirigeante",
-                f"distance_max_{CANDIDATE_PROXIMITY}_caracteres", "contexte_sa",
-            ],
-            "proximite_revocation_fonction": CANDIDATE_PROXIMITY,
-            "fenetres": f"toutes les cooccurrences candidates ±{CONTEXT_RADIUS} caractères, intervalles fusionnés",
-            "classement": False,
-        },
+        "decisions_revue_modele": len(reviewed_records),
         "echecs_texte_integral": len(failures),
         "caracteres_texte_integral": sum(record["caracteres"] for record in records),
         "tokens_texte_integral_estimes": sum(record["tokens_texte_estimes"] for record in records),
@@ -702,8 +585,7 @@ def build_research_corpus(args: Dict[str, Any], client: Any = None) -> Dict[str,
         "downloaded": len(records),
         "scanned": len(records),
         "failed": len(failures),
-        "model_candidates": len(candidates),
-        "static_closed": len(static_cards),
+        "model_reviewed": len(reviewed_records),
         "batches": len(batches),
         "batch_plan": os.path.join(folder, "batch-plan.json"),
         "index": os.path.join(folder, "index.md"),
@@ -772,10 +654,12 @@ def rebuild_research_mapping(args: Dict[str, Any]) -> Dict[str, Any]:
         HARD_BATCH_MAX_DECISIONS,
     )
     for record in records:
-        candidate, reasons = _mapping_candidate(record)
-        record["candidat_cartographie_modele"] = candidate
-        record["criteres_filtre_trouves"] = reasons
-        record["contextes_cartographie"] = _context_windows(record["texte"]) if candidate else []
+        # Les anciennes versions inscrivaient un filtre métier dans ces
+        # champs. La reconstruction fait désormais repasser chaque décision
+        # téléchargée dans les lots, quelle que soit sa terminologie.
+        record.pop("candidat_cartographie_modele", None)
+        record.pop("criteres_filtre_trouves", None)
+        record.pop("contextes_cartographie", None)
 
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     archive = os.path.join(folder, "mapping-archives", stamp)
@@ -796,14 +680,6 @@ def rebuild_research_mapping(args: Dict[str, Any]) -> Dict[str, Any]:
     cards_dir = os.path.join(folder, "cards")
     os.makedirs(batches_dir, exist_ok=False)
     os.makedirs(cards_dir, exist_ok=False)
-    static_cards = [
-        _static_non_candidate_card(record)
-        for record in records
-        if not record["candidat_cartographie_modele"]
-    ]
-    if static_cards:
-        _write_jsonl(os.path.join(cards_dir, "static-non-candidates.jsonl"), static_cards)
-
     header = _batch_header(question)
     batches = []
     current_records = []
@@ -832,9 +708,9 @@ def rebuild_research_mapping(args: Dict[str, Any]) -> Dict[str, Any]:
         current_parts = []
         current_tokens = estimate_tokens(header)
 
-    candidates = [record for record in records if record["candidat_cartographie_modele"]]
-    for position, record in enumerate(candidates, 1):
-        part = _candidate_markdown(position, record)
+    reviewed_records = records
+    for position, record in enumerate(reviewed_records, 1):
+        part = _batch_decision_markdown(position, record)
         part_tokens = estimate_tokens(part)
         if current_records and (
             current_tokens + part_tokens > target_tokens
@@ -850,20 +726,15 @@ def rebuild_research_mapping(args: Dict[str, Any]) -> Dict[str, Any]:
     _write_json(os.path.join(folder, "batch-plan.json"), batches)
     with open(os.path.join(folder, "telemetry.json"), "r", encoding="utf-8") as handle:
         telemetry = json.load(handle)
+    for key in (
+        "decisions_candidates_modele",
+        "decisions_fermees_statiquement",
+        "filtre_candidature",
+    ):
+        telemetry.pop(key, None)
     telemetry.update({
-        "methode": "scan statique exhaustif + revue de toutes les candidates, sans RAG ni top-k",
-        "decisions_candidates_modele": len(candidates),
-        "decisions_fermees_statiquement": len(static_cards),
-        "filtre_candidature": {
-            "operateur": "ET",
-            "criteres": [
-                "revocation", "fonction_dirigeante",
-                f"distance_max_{CANDIDATE_PROXIMITY}_caracteres", "contexte_sa",
-            ],
-            "proximite_revocation_fonction": CANDIDATE_PROXIMITY,
-            "fenetres": f"toutes les cooccurrences candidates ±{CONTEXT_RADIUS} caractères, intervalles fusionnés",
-            "classement": False,
-        },
+        "methode": "corpus exhaustif fixe, revue de chaque décision téléchargée, sans RAG ni top-k",
+        "decisions_revue_modele": len(reviewed_records),
         "lots": len(batches),
         "decisions_max_par_lot": max_batch_decisions,
         "tokens_entree_cartographie_estimes": sum(
@@ -882,8 +753,7 @@ def rebuild_research_mapping(args: Dict[str, Any]) -> Dict[str, Any]:
         "folder": folder,
         "archive": archive,
         "scanned": len(records),
-        "model_candidates": len(candidates),
-        "static_closed": len(static_cards),
+        "model_reviewed": len(reviewed_records),
         "batches": len(batches),
         "tokens_input_estimated": telemetry["tokens_entree_cartographie_estimes"],
         "token_estimation_method": TOKEN_ESTIMATION_METHOD,
@@ -988,8 +858,7 @@ def validate_research_cards(args: Dict[str, Any]) -> Dict[str, Any]:
         try:
             loaded_cards = _load_jsonl(path)
             cards.extend(loaded_cards)
-            if os.path.basename(path) != "static-non-candidates.jsonl":
-                model_cards.extend(loaded_cards)
+            model_cards.extend(loaded_cards)
         except (OSError, ValueError) as exc:
             parse_errors.append(str(exc))
 

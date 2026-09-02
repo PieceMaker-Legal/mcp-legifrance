@@ -472,7 +472,7 @@ NOTE: Incluez le nom du code dans la query pour cibler un code spécifique (ex: 
     },
     {
         "name": "Build_Research_Corpus",
-        "description": "Construit un corpus jurisprudentiel exhaustif et reproductible, sans RAG : exécute plusieurs requêtes, déduplique, télécharge et scanne chaque texte intégral. Un filtre booléen large et documenté ferme statiquement les incompatibilités certaines ; toutes les candidates restantes sont préparées en lots bornés contenant chaque contexte lexical, sans embeddings, score de sélection ni top-k. Rend la couverture et une estimation explicite des tokens.",
+        "description": "Construit un corpus jurisprudentiel exhaustif et reproductible, sans RAG : exécute plusieurs requêtes, déduplique, télécharge et scanne chaque texte intégral. Chaque décision téléchargée est préparée dans un lot borné avec son texte intégral, sans embeddings, score de sélection ni top-k. Rend la couverture et une estimation explicite des tokens.",
         "inputSchema": {
             "type": "object",
             "properties": {

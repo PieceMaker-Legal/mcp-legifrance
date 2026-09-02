@@ -1592,9 +1592,8 @@ def handle_build_research_corpus(args: Dict[str, Any], user_id: str) -> Dict[str
         f"**Décisions identifiées (dédupliquées):** {info['identified']}\n"
         f"**Textes intégraux téléchargés et scannés:** {info['scanned']}\n"
         f"**Échecs:** {info['failed']}\n"
-        f"**Hors champ fermés par filtre booléen:** {info['static_closed']}\n"
-        f"**Candidates à revoir par modèle économique:** {info['model_candidates']}\n"
-        f"**Lots candidats à cartographier:** {info['batches']}\n"
+        f"**Décisions à revoir par modèle économique:** {info['model_reviewed']}\n"
+        f"**Lots à cartographier:** {info['batches']}\n"
         f"**Entrée LLM estimée:** {info['tokens_input_estimated']:,} tokens "
         f"({info['token_estimation_method']}; ce n'est pas un relevé fournisseur)\n"
         f"{truncated_note}\n\n"
@@ -1602,10 +1601,10 @@ def handle_build_research_corpus(args: Dict[str, Any], user_id: str) -> Dict[str
         f"**Plan des lots:** {info['batch_plan']}\n"
         f"**Télémétrie:** {info['telemetry']}\n\n"
         "Traitez chaque fichier `batches/lot-*.md` et écrivez exactement une "
-        "fiche JSON par candidate dans le fichier `cards/lot-*.jsonl` correspondant. "
+        "fiche JSON par décision dans le fichier `cards/lot-*.jsonl` correspondant. "
         "Appelez ensuite `Validate_Research_Cards`. Toutes les décisions doivent "
-        "recevoir une fiche : les incompatibilités lexicales certaines ont déjà "
-        "une fiche statique, sans appel modèle."
+        "recevoir une fiche du modèle, y compris celles qui ne sont finalement pas "
+        "pertinentes pour la question."
     )
     return create_response(summary)
 
