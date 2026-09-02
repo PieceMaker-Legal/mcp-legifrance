@@ -546,18 +546,6 @@ def handle_search_cour_cassation(args: Dict[str, Any], user_id: str) -> Dict[str
             "valeurs": [valeur_pub]
         })
 
-    # Filtre NATURE_DECISION
-    natures = args.get("CASSATION_NATURE_DECISION", ["TOUS"])
-    if natures and natures != ["TOUS"] and "TOUS" not in natures:
-        # Mapper vers les valeurs API correctes
-        nature_mapping = {
-            "CASSATION": "arret",  # En fait l'API ne distingue pas, c'est dans le texte
-            "REJET": "arret",
-            "CASSATION_PARTIELLE": "arret"
-        }
-        # Pour l'instant on ne filtre pas car l'API ne fournit pas cette facette directement
-        pass
-
     try:
         # Appel API avec critères parsés
         # On passe directement les critères au lieu de laisser legifrance_client splitter la query

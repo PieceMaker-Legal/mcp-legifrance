@@ -49,14 +49,6 @@ Le système parse automatiquement et optimise la requête."""
                     "default": "TOUS",
                     "description": "PUBLIE = arrêts de principe uniquement"
                 },
-                "CASSATION_NATURE_DECISION": {
-                    "type": "array",
-                    "items": {
-                        "type": "string",
-                        "enum": ["CASSATION", "REJET", "CASSATION_PARTIELLE", "TOUS"]
-                    },
-                    "default": ["TOUS"]
-                },
                 "date_debut": {
                     "type": "string",
                     "description": "Date début YYYY-MM-DD (défaut: 5 ans en arrière)"
