@@ -1597,7 +1597,7 @@ def handle_build_research_corpus(args: Dict[str, Any], user_id: str) -> Dict[str
     summary = (
         "**📚 CORPUS JURISPRUDENTIEL EXHAUSTIF PRÉPARÉ**\n\n"
         f"**Question:** {info['question']}\n"
-        f"**Requêtes:** {len(info['queries'])}\n"
+        f"**Formulation:** {info['query']}\n"
         f"**Décisions identifiées (dédupliquées):** {info['identified']}\n"
         f"**Textes intégraux téléchargés et scannés:** {info['scanned']}\n"
         f"**Échecs:** {info['failed']}\n"

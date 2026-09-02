@@ -476,7 +476,16 @@ Chaque famille est etendue aux valeurs reelles de la facette officielle PREMIER_
     },
     {
         "name": "Build_Research_Corpus",
-        "description": "Constitue un corpus jurisprudentiel à partir d'une question, télécharge les décisions et prépare leur revue par lots. Crée un dossier documenté dans Downloads ou dans output_dir, avec les textes, les lots, les fiches et recompile_research.py pour contrôler la couverture, signaler le travail restant et produire le rapport Markdown final.",
+        "description": (
+            "Constitue un corpus jurisprudentiel à partir d'une question de droit et d'une seule "
+            "formulation Légifrance précise. Avant tout téléchargement, le total officiel cumulé des "
+            "juridictions est contrôlé et l'appel est refusé au-delà de 500 résultats ; tout corpus "
+            "créé contient donc au plus 500 décisions dédupliquées et prépare leur revue par lots. "
+            "Avant l'appel, si les faits utiles, la période ou le droit applicable "
+            "sont insuffisants, poser des questions de clarification plutôt que multiplier les formulations. "
+            "Il est recommandé d'inclure l'article de référence lorsqu'il est connu et de borner les dates "
+            "à la version du texte applicable."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -484,14 +493,15 @@ Chaque famille est etendue aux valeurs reelles de la facette officielle PREMIER_
                     "type": "string",
                     "description": "Question de droit complète posée par le LLM. Elle sert aussi de titre lisible au dossier du corpus et au rapport Markdown final."
                 },
-                "queries": {
-                    "type": "array",
-                    "items": {"type": "string"},
+                "query": {
+                    "type": "string",
                     "description": (
-                        "Formulations Légifrance complémentaires ; chaque élément suit cette syntaxe. "
+                        "Unique formulation Légifrance, distincte de la question de droit et choisie avec "
+                        "précision ; elle suit cette syntaxe. "
                         + QUERY_SYNTAX_ET_DESCRIPTION
-                        + "\n\nSi absent, la question est utilisée telle quelle. Pour une recherche de "
-                        "qualité, fournir les expressions de principe, exceptions, textes et formulations contraires."
+                        + "\n\nNe pas fournir plusieurs formulations : si les faits, la période ou le droit "
+                        "applicable sont incertains, poser d'abord des questions. Il est recommandé d'inclure "
+                        "l'article de référence connu et de borner les dates selon la version du texte applicable."
                     )
                 },
                 "juridictions": {
@@ -501,7 +511,7 @@ Chaque famille est etendue aux valeurs reelles de la facette officielle PREMIER_
                         "enum": ["cassation", "appel", "premiere_instance", "administratif"]
                     },
                     "default": ["cassation"],
-                    "description": "Corpus interrogés. Chaque couple requête/juridiction est paginé intégralement dans la limite déclarée."
+                    "description": "Corpus interrogés pour l'unique formulation. Le totalResultNumber cumulé de toutes les juridictions doit être au plus 500 avant tout téléchargement."
                 },
                 "date_debut": {
                     "type": "string",
@@ -510,20 +520,6 @@ Chaque famille est etendue aux valeurs reelles de la facette officielle PREMIER_
                 "date_fin": {
                     "type": "string",
                     "description": "Date maximale AAAA-MM-JJ. Sans valeur, aucune borne n'est ajoutée."
-                },
-                "max_results_per_query": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 500,
-                    "default": 500,
-                    "description": "Plafond par couple requête/juridiction. Toute troncature est inscrite dans le manifeste et le rapport."
-                },
-                "max_decisions": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 2000,
-                    "default": 1000,
-                    "description": "Plafond global après déduplication."
                 },
                 "batch_target_tokens": {
                     "type": "integer",
@@ -551,7 +547,7 @@ Chaque famille est etendue aux valeurs reelles de la facette officielle PREMIER_
                     "description": "Dossier racine de sortie choisi par l'appelant. Défaut : le dossier Downloads de l'utilisateur. Le corpus y est créé dans un sous-dossier 'AAAA-MM-JJ - Question', à côté du rapport Markdown homonyme."
                 }
             },
-            "required": ["question"]
+            "required": ["question", "query"]
         }
     },
 

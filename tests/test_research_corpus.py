@@ -72,25 +72,104 @@ class GenericLawClient:
         }}
 
 
+class OverLimitClient:
+    """Simule deux juridictions dont les totaux cumulés dépassent la limite."""
+    def __init__(self):
+        self.search_calls = []
+        self.fetch_calls = []
+
+    def search_with_criteres(self, **kwargs):
+        self.search_calls.append(kwargs)
+        values = kwargs["filtres"][0].get("valeurs", [])
+        total = 250 if values == ["Cour de cassation"] else 251
+        return {"totalResultNumber": total, "results": [search_result("JURITEXT000")]}
+
+    def get_decision_text(self, text_id):
+        self.fetch_calls.append(text_id)
+        raise AssertionError("aucun téléchargement ne doit commencer")
+
+
+class EmptyResultsClient:
+    def __init__(self):
+        self.search_calls = []
+        self.fetch_calls = []
+
+    def search_with_criteres(self, **kwargs):
+        self.search_calls.append(kwargs)
+        return {"totalResultNumber": 0, "results": []}
+
+    def get_decision_text(self, text_id):
+        self.fetch_calls.append(text_id)
+        raise AssertionError("un corpus vide ne télécharge aucun texte")
+
+
 class ResearchCorpusTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="legifrance-research-")
         self.addCleanup(self.temp.cleanup)
 
-    def test_construction_deduplique_et_telecharge_tout(self):
+    def test_construction_telecharge_toute_la_formulation_unique(self):
         client = FakeLegifranceClient()
         info = build_research_corpus({
             "question": "Conditions de révocation",
-            "queries": ["premiere révocation", "seconde révocation"],
+            "query": "premiere révocation",
             "juridictions": ["cassation"],
             "output_dir": self.temp.name,
             "fetch_workers": 2,
         }, client=client)
-        self.assertEqual(info["identified"], 3)
-        self.assertEqual(info["downloaded"], 3)
-        self.assertEqual(sorted(client.fetch_calls), ["JURITEXT001", "JURITEXT002", "JURITEXT003"])
+        self.assertEqual(info["identified"], 2)
+        self.assertEqual(info["downloaded"], 2)
+        self.assertEqual(sorted(client.fetch_calls), ["JURITEXT001", "JURITEXT002"])
         self.assertGreater(info["tokens_input_estimated"], 0)
-        self.assertEqual(info["model_reviewed"], 3)
+        self.assertEqual(info["model_reviewed"], 2)
+        with open(info["telemetry"], encoding="utf-8") as handle:
+            telemetry = json.load(handle)
+        self.assertEqual(telemetry["total_resultats_cumules_avant_deduplication"], 2)
+
+    def test_rejette_l_ancien_tableau_queries(self):
+        with self.assertRaisesRegex(ValueError, "`queries` n'est plus accepté"):
+            build_research_corpus({
+                "question": "Conditions de révocation",
+                "queries": ["révocation"],
+                "output_dir": self.temp.name,
+            }, client=FakeLegifranceClient())
+
+    def test_rejette_query_qui_n_est_pas_une_chaine(self):
+        for query in ([], {}, 42, None):
+            with self.subTest(query=query), self.assertRaisesRegex(ValueError, "chaîne de caractères"):
+                build_research_corpus({
+                    "question": "Conditions de révocation",
+                    "query": query,
+                    "output_dir": self.temp.name,
+                }, client=FakeLegifranceClient())
+
+    def test_total_zero_produit_un_corpus_vide_sans_telechargement(self):
+        client = EmptyResultsClient()
+        info = build_research_corpus({
+            "question": "Conditions de révocation",
+            "query": "révocation ET contradictoire",
+            "output_dir": self.temp.name,
+        }, client=client)
+        self.assertEqual((info["identified"], info["downloaded"], info["scanned"]), (0, 0, 0))
+        self.assertEqual(client.fetch_calls, [])
+        self.assertEqual(len(client.search_calls), 1)
+        with open(info["telemetry"], encoding="utf-8") as handle:
+            telemetry = json.load(handle)
+        self.assertNotIn("tronquee", telemetry["contrôle_préalable"][0])
+        self.assertFalse(telemetry["requêtes"][0]["tronquee"])
+
+    def test_refuse_plus_de_500_resultats_avant_tout_telechargement(self):
+        client = OverLimitClient()
+        with self.assertRaisesRegex(ValueError, "501 résultats cumulés") as caught:
+            build_research_corpus({
+                "question": "Conditions de révocation",
+                "query": "révocation ET contradictoire",
+                "juridictions": ["cassation", "appel"],
+                "output_dir": self.temp.name,
+            }, client=client)
+        self.assertIn("guillemets", str(caught.exception))
+        self.assertEqual(len(client.search_calls), 2)
+        self.assertEqual(client.fetch_calls, [])
 
     def test_question_generique_est_lotee_avec_le_texte_integral(self):
         body = (
@@ -99,7 +178,7 @@ class ResearchCorpusTest(unittest.TestCase):
         )
         info = build_research_corpus({
             "question": "La faute grave prive-t-elle le salarié de préavis ?",
-            "queries": ["faute grave préavis"],
+            "query": "faute grave préavis",
             "output_dir": self.temp.name,
             "fetch_workers": 1,
         }, client=GenericLawClient("JURITEXTFAUTE", body))
@@ -127,7 +206,7 @@ class ResearchCorpusTest(unittest.TestCase):
         )
         info = build_research_corpus({
             "question": "Conditions de révocation d'un PCA",
-            "queries": ["révocation PCA"],
+            "query": "révocation PCA",
             "output_dir": self.temp.name,
             "fetch_workers": 1,
         }, client=GenericLawClient("JURITEXTPCA", body))
@@ -165,7 +244,7 @@ class ResearchCorpusTest(unittest.TestCase):
     def test_validation_exige_une_citation_litterale(self):
         info = build_research_corpus({
             "question": "Conditions de révocation",
-            "queries": ["premiere révocation"],
+            "query": "premiere révocation",
             "output_dir": self.temp.name,
             "fetch_workers": 1,
         }, client=FakeLegifranceClient())
@@ -197,7 +276,7 @@ class ResearchCorpusTest(unittest.TestCase):
     def test_compilateur_indique_les_fiches_restantes(self):
         info = build_research_corpus({
             "question": "Conditions de révocation",
-            "queries": ["premiere révocation"],
+            "query": "premiere révocation",
             "output_dir": self.temp.name,
             "fetch_workers": 1,
         }, client=FakeLegifranceClient())
@@ -220,7 +299,7 @@ class ResearchCorpusTest(unittest.TestCase):
     def test_compilateur_indique_toutes_les_fiches_quand_cards_est_vide(self):
         info = build_research_corpus({
             "question": "Conditions de révocation",
-            "queries": ["premiere révocation"],
+            "query": "premiere révocation",
             "output_dir": self.temp.name,
             "fetch_workers": 1,
         }, client=FakeLegifranceClient())

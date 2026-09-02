@@ -25,7 +25,7 @@ PUBLIC_QUERY_TOOLS = {
     "Search_Premiere_Instance": "query",
     "Search_Code": "query",
     "Download_Query_Results": "query",
-    "Build_Research_Corpus": "queries",
+    "Build_Research_Corpus": "query",
 }
 
 
@@ -38,7 +38,6 @@ class ResearchToolContractsTest(unittest.TestCase):
             tool["name"]
             for tool in MCP_TOOLS
             if "query" in tool["inputSchema"]["properties"]
-            or "queries" in tool["inputSchema"]["properties"]
         }
         self.assertEqual(tools_avec_requete, set(PUBLIC_QUERY_TOOLS))
 
@@ -53,6 +52,13 @@ class ResearchToolContractsTest(unittest.TestCase):
                 if name != "Search_Premiere_Instance":
                     self.assertIn(QUERY_SYNTAX_ET_DESCRIPTION, description)
                     self.assertIn("reliés par `ET`", description)
+
+    def test_build_corpus_exige_une_formulation_unique(self):
+        schema = self.tools["Build_Research_Corpus"]["inputSchema"]
+        self.assertEqual(schema["required"], ["question", "query"])
+        self.assertNotIn("queries", schema["properties"])
+        self.assertNotIn("max_decisions", schema["properties"])
+        self.assertNotIn("max_results_per_query", schema["properties"])
 
     def test_exception_premiere_instance_est_explicite_et_centralisee(self):
         description = self.tools["Search_Premiere_Instance"]["inputSchema"]["properties"]["query"]["description"]

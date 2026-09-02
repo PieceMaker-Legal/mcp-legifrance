@@ -31,10 +31,7 @@ from tools import research_report_compiler
 
 
 PAGE_SIZE = 100
-DEFAULT_MAX_PER_QUERY = 500
-HARD_MAX_PER_QUERY = 500
-DEFAULT_MAX_DECISIONS = 1000
-HARD_MAX_DECISIONS = 2000
+MAX_CUMULATIVE_RESULTS = 500
 DEFAULT_BATCH_TARGET_TOKENS = 60_000
 HARD_BATCH_TARGET_TOKENS = 150_000
 DEFAULT_BATCH_MAX_DECISIONS = 1
@@ -63,8 +60,8 @@ def _normalize(value: Any) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
 
 
-def _query_terms(question: str, queries: Iterable[str]) -> List[str]:
-    words = re.findall(r"[a-zA-ZÀ-ÿ0-9.-]{3,}", " ".join([question, *queries]))
+def _query_terms(question: str, query: str) -> List[str]:
+    words = re.findall(r"[a-zA-ZÀ-ÿ0-9.-]{3,}", " ".join([question, query]))
     terms = []
     for word in words:
         normalized = _normalize(word).strip(".-")
@@ -74,20 +71,20 @@ def _query_terms(question: str, queries: Iterable[str]) -> List[str]:
     return terms
 
 
-def _clean_queries(question: str, raw_queries: Any) -> List[str]:
-    if isinstance(raw_queries, str):
-        raw_queries = [raw_queries]
-    values = raw_queries if isinstance(raw_queries, list) else []
-    if not values and question:
-        values = [question]
-    queries = []
-    for value in values:
-        clean = re.sub(r"\s+", " ", str(value or "")).strip()
-        if clean and clean not in queries:
-            queries.append(clean)
-    if not queries:
-        raise ValueError("question ou queries requis")
-    return queries
+def _clean_query(args: Dict[str, Any]) -> str:
+    """Valide la formulation unique du contrat public Build_Research_Corpus."""
+    if "queries" in args:
+        raise ValueError(
+            "Le paramètre `queries` n'est plus accepté : fournissez une seule "
+            "formulation précise dans `query`."
+        )
+    raw_query = args.get("query")
+    if not isinstance(raw_query, str):
+        raise ValueError("`query` doit être une chaîne de caractères contenant une formulation précise")
+    query = re.sub(r"\s+", " ", raw_query).strip()
+    if not query:
+        raise ValueError("`query` est requis et doit contenir une formulation de recherche précise")
+    return query
 
 
 def _clean_jurisdictions(raw: Any) -> List[str]:
@@ -190,6 +187,51 @@ def _search_query(
         "tronquee": tronquee,
         "appels_recherche": calls,
     }
+
+
+def _preflight_cumulative_total(
+    client: Any,
+    query: str,
+    jurisdictions: List[str],
+    date_debut: Optional[str],
+    date_fin: Optional[str],
+) -> List[Dict[str, Any]]:
+    """Lit les totaux officiels avant toute collecte ou téléchargement."""
+    reports = []
+    cumulative_total = 0
+    for jurisdiction in jurisdictions:
+        _results, report = _search_query(
+            client, query, jurisdiction, date_debut, date_fin, max_results=1,
+        )
+        total = report["total_api"]
+        if not report["total_api_connu"] or total is None:
+            raise ValueError(
+                "L'API Légifrance n'a pas fourni de nombre de résultats fiable ; "
+                "la recherche est arrêtée avant tout téléchargement."
+            )
+        cumulative_total += total
+        # Ce n'est pas une collecte : une page de taille 1 serait naturellement
+        # tronquée pour tout total supérieur à 1. Ne pas exposer ce signal comme
+        # une troncature du corpus dans la télémétrie.
+        reports.append({
+            "query": query,
+            "juridiction": jurisdiction,
+            "total_api": total,
+            "total_api_connu": True,
+            "appels_recherche": report["appels_recherche"],
+            "phase": "contrôle_préalable",
+        })
+
+    if cumulative_total > MAX_CUMULATIVE_RESULTS:
+        raise ValueError(
+            f"La formulation produit {cumulative_total} résultats cumulés pour les juridictions "
+            f"demandées, au-delà de la limite absolue de {MAX_CUMULATIVE_RESULTS}. "
+            "Aucun téléchargement n'a été lancé. Reformulez avec des guillemets pour une expression "
+            "exacte, des mots juridiques choisis et les opérateurs ET/OU ; incluez si possible "
+            "l'article de référence et bornez les dates à la version du texte applicable. Si les faits, "
+            "la période ou le droit applicable restent incertains, posez d'abord des questions."
+        )
+    return reports
 
 
 def _format_date(value: Any) -> str:
@@ -439,12 +481,10 @@ def build_research_corpus(args: Dict[str, Any], client: Any = None) -> Dict[str,
     """Construit le corpus complet, ses lots et sa télémétrie."""
     client = client or legifrance_client
     question = re.sub(r"\s+", " ", str(args.get("question") or "")).strip()
-    queries = _clean_queries(question, args.get("queries"))
     if not question:
-        question = queries[0]
+        raise ValueError("`question` est requise et doit formuler la question de droit")
+    query = _clean_query(args)
     jurisdictions = _clean_jurisdictions(args.get("juridictions"))
-    max_per_query = min(max(1, int(args.get("max_results_per_query") or DEFAULT_MAX_PER_QUERY)), HARD_MAX_PER_QUERY)
-    max_decisions = min(max(1, int(args.get("max_decisions") or DEFAULT_MAX_DECISIONS)), HARD_MAX_DECISIONS)
     target_tokens = min(
         max(5_000, int(args.get("batch_target_tokens") or DEFAULT_BATCH_TARGET_TOKENS)),
         HARD_BATCH_TARGET_TOKENS,
@@ -457,38 +497,55 @@ def build_research_corpus(args: Dict[str, Any], client: Any = None) -> Dict[str,
     date_debut = args.get("date_debut") or None
     date_fin = args.get("date_fin") or None
 
+    preflight_reports = _preflight_cumulative_total(
+        client, query, jurisdictions, date_debut, date_fin,
+    )
     search_reports = []
     seeds: Dict[str, Dict[str, Any]] = {}
-    global_truncated = False
-    for query in queries:
-        for jurisdiction in jurisdictions:
-            results, report = _search_query(
-                client, query, jurisdiction, date_debut, date_fin, max_per_query
+    for jurisdiction in jurisdictions:
+        total = next(
+            item["total_api"] for item in preflight_reports
+            if item["juridiction"] == jurisdiction
+        )
+        if total == 0:
+            search_reports.append({
+                "query": query,
+                "juridiction": jurisdiction,
+                "total_api": 0,
+                "total_api_connu": True,
+                "collectes": 0,
+                "tronquee": False,
+                "appels_recherche": 0,
+                "phase": "collecte",
+            })
+            continue
+        results, report = _search_query(
+            client, query, jurisdiction, date_debut, date_fin,
+            total,
+        )
+        report["phase"] = "collecte"
+        search_reports.append(report)
+        if report["tronquee"]:
+            raise ValueError(
+                "La collecte Légifrance est incomplète après le contrôle préalable ; "
+                "aucun téléchargement n'a été lancé. Réessayez avec une formulation plus précise."
             )
-            search_reports.append(report)
-            if report["tronquee"]:
-                global_truncated = True
-            for rank, result in enumerate(results, 1):
-                text_id, title = _search_identity(result)
-                if not text_id:
-                    continue
-                if text_id not in seeds and len(seeds) >= max_decisions:
-                    global_truncated = True
-                    continue
-                seed = seeds.setdefault(text_id, {
-                    "id": text_id,
-                    "titre": title,
-                    "analyse": "",
-                    "requêtes": [],
-                    "juridictions_recherche": [],
-                    "juridiction_source": jurisdiction,
-                    "rang_min": rank,
-                })
-                if query not in seed["requêtes"]:
-                    seed["requêtes"].append(query)
-                if jurisdiction not in seed["juridictions_recherche"]:
-                    seed["juridictions_recherche"].append(jurisdiction)
-                seed["rang_min"] = min(seed["rang_min"], rank)
+        for rank, result in enumerate(results, 1):
+            text_id, title = _search_identity(result)
+            if not text_id:
+                continue
+            seed = seeds.setdefault(text_id, {
+                "id": text_id,
+                "titre": title,
+                "analyse": "",
+                "requêtes": [query],
+                "juridictions_recherche": [],
+                "juridiction_source": jurisdiction,
+                "rang_min": rank,
+            })
+            if jurisdiction not in seed["juridictions_recherche"]:
+                seed["juridictions_recherche"].append(jurisdiction)
+            seed["rang_min"] = min(seed["rang_min"], rank)
 
     # Initialise le jeton avant le parallélisme lorsque le client réel expose
     # cette méthode. Les clients de test n'en ont pas besoin.
@@ -509,7 +566,7 @@ def build_research_corpus(args: Dict[str, Any], client: Any = None) -> Dict[str,
                 failures.append({"id": seed["id"], "erreur": error})
 
     order = {seed["id"]: index for index, seed in enumerate(seed_values)}
-    terms = _query_terms(question, queries)
+    terms = _query_terms(question, query)
     records.sort(key=lambda record: order.get(record["id"], 10 ** 9))
     records = [_score_decision(record, terms) for record in records]
     for record in records:
@@ -630,8 +687,14 @@ def build_research_corpus(args: Dict[str, Any], client: Any = None) -> Dict[str,
     telemetry = {
         "methode": "corpus exhaustif fixe, sans embeddings ni top-k",
         "estimation_tokens": TOKEN_ESTIMATION_METHOD,
+        "contrôle_préalable": preflight_reports,
+        "total_resultats_cumules_avant_deduplication": sum(
+            report["total_api"] for report in preflight_reports
+        ),
         "requêtes": search_reports,
-        "appels_api_recherche": sum(report["appels_recherche"] for report in search_reports),
+        "appels_api_recherche": sum(
+            report["appels_recherche"] for report in [*preflight_reports, *search_reports]
+        ),
         "decisions_identifiees_dedoublonnees": len(seeds),
         "decisions_texte_integral_telecharge": len(records),
         "decisions_scannees": len(records),
@@ -643,7 +706,7 @@ def build_research_corpus(args: Dict[str, Any], client: Any = None) -> Dict[str,
         "decisions_max_par_lot": max_batch_decisions,
         "tokens_entree_cartographie_estimes": sum(batch["tokens_entree_estimes"] for batch in batches),
         "tokens_modele_exacts": None,
-        "tronquee": global_truncated,
+        "tronquee": False,
         "echecs": failures,
     }
     _write_json(os.path.join(folder, "telemetry.json"), telemetry)
@@ -654,7 +717,7 @@ def build_research_corpus(args: Dict[str, Any], client: Any = None) -> Dict[str,
         "question": question,
         "output_title": output_title,
         "report": report_path,
-        "queries": queries,
+        "query": query,
         "juridictions": jurisdictions,
         "date_debut": date_debut,
         "date_fin": date_fin,
@@ -663,7 +726,7 @@ def build_research_corpus(args: Dict[str, Any], client: Any = None) -> Dict[str,
         "downloaded": len(records),
         "scanned": len(records),
         "failed": len(failures),
-        "truncated": global_truncated,
+        "truncated": False,
         "files": ["index.md", "decisions.jsonl", "batch-plan.json", "telemetry.json", *files],
     }
     _write_json(os.path.join(folder, MARKER_NAME), marker)
@@ -672,7 +735,7 @@ def build_research_corpus(args: Dict[str, Any], client: Any = None) -> Dict[str,
         "folder": folder,
         "report": report_path,
         "question": question,
-        "queries": queries,
+        "query": query,
         "identified": len(seeds),
         "downloaded": len(records),
         "scanned": len(records),
@@ -684,7 +747,7 @@ def build_research_corpus(args: Dict[str, Any], client: Any = None) -> Dict[str,
         "telemetry": os.path.join(folder, "telemetry.json"),
         "tokens_input_estimated": telemetry["tokens_entree_cartographie_estimes"],
         "token_estimation_method": TOKEN_ESTIMATION_METHOD,
-        "truncated": global_truncated,
+        "truncated": False,
     }
 
 
