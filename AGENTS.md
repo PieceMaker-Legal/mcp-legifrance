@@ -15,9 +15,8 @@ failure reporting. Legal conclusions remain the caller's responsibility.
 
 ## Runtime contract
 
-- Primary entry point: `mcp_stdio_server.py`.
-- Optional shared-local entry point: `mcp_http_local.py`, bound only to
-  `127.0.0.1`; configure its port with `LEGIFRANCE_MCP_PORT` (default `8765`).
+- Sole entry point: `mcp_stdio_server.py`. There is no HTTP transport: a
+  client launches one stdio server per session and owns its lifecycle.
 - Transport: one JSON-RPC 2.0 message per line on stdin/stdout.
 - Reserve stdout exclusively for JSON-RPC responses; send every log to stderr.
 - Keep `initialize`, `ping`, `tools/list`, and resource discovery functional
@@ -39,8 +38,6 @@ From this directory:
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 .venv/bin/python mcp_stdio_server.py
-# Or, for a shared loopback-only service:
-.venv/bin/python mcp_http_local.py
 ```
 
 Any MCP client can launch the absolute path to `mcp_stdio_server.py` with the
@@ -52,7 +49,6 @@ four environment variables above. Do not require plugin-specific placeholders.
 legifrance/
 ├── AGENTS.md                  # standalone operating contract
 ├── mcp_stdio_server.py        # JSON-RPC/MCP stdio entry point
-├── mcp_http_local.py          # optional loopback HTTP adapter
 ├── requirements.txt           # complete Python runtime dependencies
 ├── config/
 │   ├── mcp_definitions.py     # public schemas
@@ -79,7 +75,7 @@ in sync. Domain logic belongs in focused modules, not the stdio loop.
 
 ## Exhaustive research invariants
 
-`Build_Research_Corpus` and `Validate_Research_Cards` implement a no-RAG path:
+`Build_Research_Corpus` et le script autonome `recompile_research.py` implémentent un parcours sans RAG :
 
 - no embeddings, vector database, semantic top-k, or hidden preselection;
 - paginate every declared query up to explicit, reported limits;
