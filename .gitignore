@@ -3,7 +3,7 @@
 __pycache__/
 *.py[cod]
 logs/
+*.log
 .pytest_cache/
 .requirements.sha256
 .bootstrap.lock/
-
