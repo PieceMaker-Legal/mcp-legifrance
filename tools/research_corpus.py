@@ -27,6 +27,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from tools.bulk_download import JURIDICTION_CONFIG, MARKER_NAME, slugify
 from tools.legifrance_client import legifrance_client
 from tools.query_parser import parse_query
+from tools import research_report_compiler
 
 
 PAGE_SIZE = 100
@@ -36,7 +37,7 @@ DEFAULT_MAX_DECISIONS = 1000
 HARD_MAX_DECISIONS = 2000
 DEFAULT_BATCH_TARGET_TOKENS = 60_000
 HARD_BATCH_TARGET_TOKENS = 150_000
-DEFAULT_BATCH_MAX_DECISIONS = 30
+DEFAULT_BATCH_MAX_DECISIONS = 1
 HARD_BATCH_MAX_DECISIONS = 100
 DEFAULT_FETCH_WORKERS = 4
 HARD_FETCH_WORKERS = 8
@@ -351,15 +352,18 @@ def _batch_header(question: str) -> str:
 Lire **chaque décision** ci-dessous et produire exactement une ligne JSON par
 décision. Chaque décision est fournie avec son texte intégral ; ce n'est ni un
 classement ni un top-k. Ne jamais créer d'identifiant ni de citation.
-`citation_exacte` doit reproduire une phrase décisive complète de la Cour, et
-non l'en-tête, les seules prétentions d'une partie ou un fragment coupé. Une
-décision non pertinente doit tout de même produire une fiche avec
-`pertinent: false` et `citation_exacte: ""`.
+Juger la pertinence d'après les motifs propres du juge et le dispositif, jamais
+d'après les seuls moyens, prétentions ou arguments des avocats. Le dispositif
+commence généralement par `PAR CES MOTIFS` ou `DÉCIDE :` ; `MOYENS ANNEXES`
+appartient aux parties. `solution` indique ce que le juge prononce.
+`citation_exacte` reproduit littéralement un passage du juge qui justifie la
+pertinence. Une décision non pertinente produit tout de même une fiche avec
+`pertinent: false`, une solution factuelle et `citation_exacte: ""`.
 
 Schéma minimal :
 
 ```json
-{{"id":"JURITEXT…","pertinent":true,"question_juridique":"…","faits_determinants":["…"],"solution":"…","portee":"…","sens":"favorable|defavorable|neutre|procedural","citation_exacte":"citation littérale…","incertitudes":[]}}
+{{"id":"JURITEXT…","pertinent":true,"solution":"…","citation_exacte":"citation littérale…"}}
 ```
 
 ## Décisions
@@ -377,6 +381,58 @@ def _write_jsonl(path: str, values: Iterable[Dict[str, Any]]) -> None:
     with open(path, "w", encoding="utf-8") as handle:
         for value in values:
             handle.write(json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+
+def _safe_title_component(value: str, max_length: int = 150) -> str:
+    """Produit un titre lisible utilisable comme nom de fichier portable."""
+    cleaned = re.sub(r'[\x00-\x1f<>:"/\\|?*]+', " ", str(value or ""))
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    return cleaned[:max_length].rstrip(" .") or "Recherche jurisprudentielle"
+
+
+def _research_output_title(question: str) -> str:
+    return f"{datetime.now().strftime('%Y-%m-%d')} - {_safe_title_component(question)}"
+
+
+def _research_report_path(folder: str, marker: Dict[str, Any]) -> str:
+    title = _safe_title_component(
+        str(marker.get("output_title") or os.path.basename(folder)),
+        max_length=180,
+    )
+    return os.path.join(os.path.dirname(folder), f"{title}.md")
+
+
+def _research_readme(question: str, report_path: str) -> str:
+    return f"""# Reprendre cette recherche Légifrance
+
+## Question
+
+{question}
+
+## Organisation
+
+- `decisions/` : textes intégraux, un fichier Markdown par décision.
+- `batches/` : lots à confier au modèle ; chaque décision doit être examinée.
+- `cards/` : fiches JSONL brutes produites par le modèle.
+- `cards-validated.jsonl` : toutes les fiches valides, y compris les non pertinentes, conservées pour l'audit.
+- `metrics.json` et `validation-errors.json` : couverture et erreurs à corriger.
+- `telemetry.json` : requêtes, volumes, échecs, limites et estimation des tokens.
+
+## Reprendre le travail
+
+1. Lire `batch-plan.json` et traiter chaque lot encore sans fichier correspondant dans `cards/`.
+2. Produire exactement une fiche JSON par décision.
+3. Valider et compiler avec :
+
+```sh
+python3 recompile_research.py .
+```
+
+4. Si la commande échoue, lire `remaining-work.md` et corriger uniquement les fiches signalées.
+5. Relancer la commande jusqu'à obtenir `VALIDATION COMPLÈTE` et un code de sortie `0`.
+
+Le rapport final est `{os.path.basename(report_path)}`. Il contient la couverture et un tableau des seules décisions pertinentes. Ne jamais supprimer les fiches non pertinentes de l'audit : elles prouvent que chaque décision a bien été examinée.
+"""
 
 
 def build_research_corpus(args: Dict[str, Any], client: Any = None) -> Dict[str, Any]:
@@ -459,10 +515,16 @@ def build_research_corpus(args: Dict[str, Any], client: Any = None) -> Dict[str,
     for record in records:
         record["extraits_lexicaux"] = _relevant_extracts(record)
 
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-    default_root = os.path.join(os.path.expanduser("~"), ".legifrance-mcp", "research")
+    default_root = os.path.join(os.path.expanduser("~"), "Downloads")
     root = os.path.abspath(args.get("output_dir") or default_root)
-    folder = os.path.join(root, f"{timestamp}-{slugify(question)}")
+    output_title = _research_output_title(question)
+    folder = os.path.join(root, output_title)
+    report_path = os.path.join(root, f"{output_title}.md")
+    if os.path.exists(folder) or os.path.exists(report_path):
+        raise ValueError(
+            f"une recherche portant déjà ce titre existe dans {root}; "
+            "choisissez un autre output_dir ou déplacez le résultat existant"
+        )
     decisions_dir = os.path.join(folder, "decisions")
     batches_dir = os.path.join(folder, "batches")
     cards_dir = os.path.join(folder, "cards")
@@ -470,7 +532,14 @@ def build_research_corpus(args: Dict[str, Any], client: Any = None) -> Dict[str,
     os.makedirs(batches_dir, exist_ok=False)
     os.makedirs(cards_dir, exist_ok=False)
 
-    files = []
+    with open(os.path.join(folder, "README.md"), "w", encoding="utf-8") as handle:
+        handle.write(_research_readme(question, report_path))
+    shutil.copyfile(
+        research_report_compiler.__file__,
+        os.path.join(folder, "recompile_research.py"),
+    )
+
+    files = ["README.md", "recompile_research.py"]
     decision_paths = {}
     for position, record in enumerate(records, 1):
         name = f"{position:04d}-{slugify(record['titre'], max_length=70)}-{record['id']}.md"
@@ -583,6 +652,8 @@ def build_research_corpus(args: Dict[str, Any], client: Any = None) -> Dict[str,
     marker = {
         "kind": "legifrance-research",
         "question": question,
+        "output_title": output_title,
+        "report": report_path,
         "queries": queries,
         "juridictions": jurisdictions,
         "date_debut": date_debut,
@@ -599,6 +670,7 @@ def build_research_corpus(args: Dict[str, Any], client: Any = None) -> Dict[str,
 
     return {
         "folder": folder,
+        "report": report_path,
         "question": question,
         "queries": queries,
         "identified": len(seeds),
@@ -631,18 +703,6 @@ def _load_jsonl(path: str) -> List[Dict[str, Any]]:
                 raise ValueError(f"Fiche non objet {path}:{line_number}")
             values.append(value)
     return values
-
-
-def _card_files(folder: str, explicit: Optional[str]) -> List[str]:
-    if explicit:
-        path = explicit if os.path.isabs(explicit) else os.path.join(folder, explicit)
-        return [path]
-    cards_dir = os.path.join(folder, "cards")
-    return [
-        os.path.join(cards_dir, name)
-        for name in sorted(os.listdir(cards_dir))
-        if name.endswith(".jsonl")
-    ]
 
 
 def rebuild_research_mapping(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -690,11 +750,14 @@ def rebuild_research_mapping(args: Dict[str, Any]) -> Dict[str, Any]:
             shutil.move(path, os.path.join(archive, name))
     for name in (
         "batch-plan.json", "cards-validated.jsonl", "metrics.json",
-        "validation-errors.json", "analysis-matrix.md",
+        "validation-errors.json", "remaining-work.md", "analysis-matrix.md",
     ):
         path = os.path.join(folder, name)
         if os.path.exists(path):
             shutil.move(path, os.path.join(archive, name))
+    report_path = _research_report_path(folder, marker)
+    if os.path.exists(report_path):
+        shutil.move(report_path, os.path.join(archive, os.path.basename(report_path)))
 
     batches_dir = os.path.join(folder, "batches")
     cards_dir = os.path.join(folder, "cards")
@@ -767,6 +830,17 @@ def rebuild_research_mapping(args: Dict[str, Any]) -> Dict[str, Any]:
     _write_json(os.path.join(folder, "telemetry.json"), telemetry)
     marker["mapping_archive"] = archive
     marker["mapping_reconstruit"] = telemetry["mapping_reconstruit"]
+    marker_files = marker.get("files") if isinstance(marker.get("files"), list) else []
+    for name in ("README.md", "recompile_research.py"):
+        if name not in marker_files:
+            marker_files.append(name)
+    marker["files"] = marker_files
+    with open(os.path.join(folder, "README.md"), "w", encoding="utf-8") as handle:
+        handle.write(_research_readme(question, report_path))
+    shutil.copyfile(
+        research_report_compiler.__file__,
+        os.path.join(folder, "recompile_research.py"),
+    )
     _write_json(marker_path, marker)
 
     return {
@@ -777,265 +851,4 @@ def rebuild_research_mapping(args: Dict[str, Any]) -> Dict[str, Any]:
         "batches": len(batches),
         "tokens_input_estimated": telemetry["tokens_entree_cartographie_estimes"],
         "token_estimation_method": TOKEN_ESTIMATION_METHOD,
-    }
-
-
-def _find_quote(body: str, quote: str) -> Optional[int]:
-    """Retourne la position d'une citation littérale, sans normalisation tolérante."""
-    if not quote:
-        return None
-    return body.find(quote)
-
-
-def _quote_quality_errors(body: str, quote: str, position: int) -> List[str]:
-    """Détecte mécaniquement les fragments impropres à une preuve juridique."""
-    errors = []
-    end = position + len(quote)
-    if len(quote) < 60:
-        errors.append("citation trop courte pour établir une règle ou un motif")
-    if position > 0 and body[position - 1].isalnum() and quote[0].isalnum():
-        errors.append("citation commençant au milieu d'un mot")
-    if end < len(body) and body[end].isalnum() and quote[-1].isalnum():
-        errors.append("citation finissant au milieu d'un mot")
-    if quote[-1:] not in {".", ";", ":", "!", "?", "»", "”", '"'}:
-        errors.append("citation coupée avant sa ponctuation finale")
-    normalized = _normalize(quote)
-    first_letter = re.search(r"[A-Za-zÀ-ÖØ-öø-ÿ]", quote)
-    if first_letter and first_letter.group(0).islower():
-        errors.append("citation commençant au milieu d'une phrase")
-    if "a rendu l'arret suivant" in normalized:
-        errors.append("en-tête de décision utilisé comme citation")
-    if re.match(r"^(?:\d+°/\s*)?(?:alors|aux motifs)\b", normalized):
-        errors.append("prétention ou moyen de partie utilisé seul comme citation")
-    if re.match(
-        r"^(?:attendu,?\s+selon|soutenant|le moyen fait grief|"
-        r"il est fait grief|reproche a l'arret)\b",
-        normalized,
-    ):
-        errors.append("faits introductifs ou prétention utilisés comme citation")
-    if normalized.startswith("attendu que") and "fait grief" in normalized[:320]:
-        errors.append("exposé du moyen utilisé comme citation")
-    if re.match(r"^(?:ainsi fait et juge|par ces motifs)\b", normalized):
-        errors.append("formule de dispositif ou de clôture utilisée comme citation")
-    return errors
-
-
-def _card_schema_errors(card: Dict[str, Any], text_id: str) -> List[Dict[str, Any]]:
-    """Contrôle le contrat minimal produit par le cartographe bon marché."""
-    errors = []
-    expected_types = {
-        "pertinent": bool,
-        "question_juridique": str,
-        "faits_determinants": list,
-        "solution": str,
-        "portee": str,
-        "sens": str,
-        "citation_exacte": str,
-        "incertitudes": list,
-    }
-    for field, expected_type in expected_types.items():
-        if not isinstance(card.get(field), expected_type):
-            errors.append({
-                "id": text_id,
-                "champ": field,
-                "raison": f"type attendu : {expected_type.__name__}",
-            })
-    if isinstance(card.get("sens"), str) and card["sens"] not in {
-        "favorable", "defavorable", "neutre", "procedural",
-    }:
-        errors.append({
-            "id": text_id,
-            "champ": "sens",
-            "raison": "valeur hors enum",
-        })
-    return errors
-
-
-def validate_research_cards(args: Dict[str, Any]) -> Dict[str, Any]:
-    """Valide la couverture des fiches et l'existence de chaque citation."""
-    folder = os.path.abspath(str(args.get("folder") or ""))
-    if not folder or not os.path.isdir(folder):
-        raise ValueError("folder de recherche introuvable")
-    marker_path = os.path.join(folder, MARKER_NAME)
-    try:
-        with open(marker_path, "r", encoding="utf-8") as handle:
-            marker = json.load(handle)
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError("marqueur de recherche introuvable ou invalide") from exc
-    if marker.get("kind") != "legifrance-research":
-        raise ValueError("le dossier n'est pas un corpus de recherche exhaustive")
-
-    decisions = _load_jsonl(os.path.join(folder, "decisions.jsonl"))
-    decision_by_id = {record["id"]: record for record in decisions}
-    paths = _card_files(folder, args.get("cards_file"))
-    if not paths:
-        raise ValueError("aucun fichier cards/*.jsonl trouvé")
-
-    cards = []
-    model_cards = []
-    parse_errors = []
-    for path in paths:
-        try:
-            loaded_cards = _load_jsonl(path)
-            cards.extend(loaded_cards)
-            model_cards.extend(loaded_cards)
-        except (OSError, ValueError) as exc:
-            parse_errors.append(str(exc))
-
-    seen = set()
-    duplicates = []
-    unknown = []
-    schema_errors = []
-    unsupported_relevant = []
-    invalid_quotes = []
-    quote_quality_errors = []
-    valid_cards = []
-    for card in cards:
-        text_id = str(card.get("id") or "").strip()
-        if not text_id or text_id not in decision_by_id:
-            unknown.append(text_id or "<sans identifiant>")
-            continue
-        if text_id in seen:
-            duplicates.append(text_id)
-            continue
-        seen.add(text_id)
-        record = decision_by_id[text_id]
-        card_schema_errors = _card_schema_errors(card, text_id)
-        schema_errors.extend(card_schema_errors)
-        quote = str(card.get("citation_exacte") or "").strip()
-        position = _find_quote(record["texte"], quote)
-        quote_valid = bool(quote) and position is not None and position >= 0
-        quote_invalid = bool(quote) and not quote_valid
-        if quote_invalid:
-            invalid_quotes.append({"id": text_id, "texte": quote[:160]})
-        quality_reasons = (
-            _quote_quality_errors(record["texte"], quote, position)
-            if quote_valid else []
-        )
-        if quality_reasons:
-            quote_quality_errors.append({"id": text_id, "raisons": quality_reasons})
-        relevant_without_quote = card.get("pertinent") is True and not quote_valid
-        if relevant_without_quote:
-            unsupported_relevant.append(text_id)
-        validated = dict(card)
-        validated["citation_exacte"] = quote if quote_valid else ""
-        validated["position_citation"] = position if quote_valid else None
-        validated["citation_valide"] = quote_valid
-        validated["lien"] = record["lien"]
-        validated["date"] = record["date"]
-        validated["juridiction"] = record["juridiction"]
-        validated["numero"] = record["numero"]
-        validated["score_lexical"] = record["score_lexical"]
-        if (
-            not card_schema_errors
-            and not quote_invalid
-            and not quality_reasons
-            and not relevant_without_quote
-        ):
-            valid_cards.append(validated)
-
-    missing = sorted(set(decision_by_id) - seen)
-    def card_tokens(card: Dict[str, Any]) -> int:
-        return estimate_tokens(json.dumps(
-            card, ensure_ascii=False, separators=(",", ":")
-        ))
-
-    output_tokens_estimated = sum(card_tokens(card) for card in cards)
-    model_output_tokens_estimated = sum(card_tokens(card) for card in model_cards)
-    with open(os.path.join(folder, "telemetry.json"), "r", encoding="utf-8") as handle:
-        telemetry = json.load(handle)
-
-    usage = args.get("usage") if isinstance(args.get("usage"), dict) else {}
-    exact_usage = {
-        key: int(usage.get(key) or 0)
-        for key in (
-            "input_tokens", "output_tokens", "reasoning_tokens",
-            "cache_read_input_tokens", "cache_creation_input_tokens",
-        )
-    } if usage else None
-
-    metrics = {
-        **telemetry,
-        "fiches_recues": len(cards),
-        "fiches_valides_uniques": len(valid_cards),
-        "fiches_manquantes": len(missing),
-        "identifiants_inconnus": len(unknown),
-        "doublons": len(duplicates),
-        "erreurs_schema": len(schema_errors),
-        "fiches_pertinentes_sans_citation": len(unsupported_relevant),
-        "citations_invalides": len(invalid_quotes),
-        "citations_faible_qualite": len(quote_quality_errors),
-        "tokens_sortie_fiches_estimes": output_tokens_estimated,
-        "tokens_sortie_modele_estimes": model_output_tokens_estimated,
-        "tokens_modele_exacts": exact_usage,
-        "usage_exact_fourni": bool(exact_usage),
-        "couverture_complete": (
-            not missing and not unknown and not duplicates
-            and not schema_errors and not unsupported_relevant
-            and not invalid_quotes and not quote_quality_errors and not parse_errors
-        ),
-    }
-
-    _write_jsonl(os.path.join(folder, "cards-validated.jsonl"), valid_cards)
-    _write_json(os.path.join(folder, "metrics.json"), metrics)
-    _write_json(os.path.join(folder, "validation-errors.json"), {
-        "fiches_manquantes": missing,
-        "identifiants_inconnus": unknown,
-        "doublons": duplicates,
-        "erreurs_schema": schema_errors,
-        "fiches_pertinentes_sans_citation": unsupported_relevant,
-        "citations_invalides": invalid_quotes,
-        "citations_faible_qualite": quote_quality_errors,
-        "erreurs_lecture": parse_errors,
-    })
-
-    sorted_cards = sorted(
-        valid_cards,
-        key=lambda card: (not bool(card.get("pertinent")), -float(card.get("score_lexical") or 0), card["id"]),
-    )
-    lines = [
-        "# Matrice d'analyse jurisprudentielle validée",
-        "",
-        f"- **Décisions scannées** : {telemetry['decisions_scannees']}",
-        f"- **Fiches reçues** : {len(cards)}",
-        f"- **Couverture** : {len(seen & set(decision_by_id))}/{len(decision_by_id)}",
-        f"- **Citations rejetées** : {len(invalid_quotes)}",
-        f"- **Tokens d'entrée estimés** : {telemetry['tokens_entree_cartographie_estimes']}",
-        f"- **Tokens de sortie modèle estimés** : {model_output_tokens_estimated}",
-        f"- **Tokens de toutes les fiches estimés** : {output_tokens_estimated}",
-        f"- **Usage modèle exact fourni** : {'oui' if exact_usage else 'non'}",
-        "",
-    ]
-    for card in sorted_cards:
-        lines.extend([
-            f"## {card['id']} — {'pertinente' if card.get('pertinent') else 'non pertinente'}",
-            "",
-            f"- **Juridiction / date / numéro** : {card.get('juridiction', '')} — {card.get('date', '')} — {card.get('numero', '')}",
-            f"- **Question** : {card.get('question_juridique', '')}",
-            f"- **Solution** : {card.get('solution', '')}",
-            f"- **Portée** : {card.get('portee', '')}",
-            f"- **Sens** : {card.get('sens', '')}",
-            f"- **Lien** : {card.get('lien', '')}",
-            "",
-        ])
-        if card.get("citation_exacte"):
-            lines.append(f"> {card['citation_exacte']}")
-            lines.append("")
-    with open(os.path.join(folder, "analysis-matrix.md"), "w", encoding="utf-8") as handle:
-        handle.write("\n".join(lines).rstrip() + "\n")
-
-    return {
-        "folder": folder,
-        "matrix": os.path.join(folder, "analysis-matrix.md"),
-        "metrics": os.path.join(folder, "metrics.json"),
-        "cards": len(cards),
-        "valid_cards": len(valid_cards),
-        "missing": len(missing),
-        "invalid_quotes": len(invalid_quotes),
-        "weak_quotes": len(quote_quality_errors),
-        "coverage_complete": metrics["couverture_complete"],
-        "tokens_input_estimated": telemetry["tokens_entree_cartographie_estimes"],
-        "tokens_output_estimated": model_output_tokens_estimated,
-        "tokens_all_cards_estimated": output_tokens_estimated,
-        "exact_usage": exact_usage,
     }

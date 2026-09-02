@@ -11,8 +11,8 @@ sys.path.insert(0, ROOT)
 from tools.research_corpus import (
     build_research_corpus,
     rebuild_research_mapping,
-    validate_research_cards,
 )
+from tools.research_report_compiler import validate_and_compile
 
 
 def search_result(text_id):
@@ -106,6 +106,14 @@ class ResearchCorpusTest(unittest.TestCase):
 
         self.assertEqual(info["model_reviewed"], 1)
         self.assertEqual(info["batches"], 1)
+        title = os.path.basename(info["folder"])
+        self.assertRegex(
+            title,
+            r"^\d{4}-\d{2}-\d{2} - La faute grave prive-t-elle le salarié de préavis$",
+        )
+        self.assertEqual(info["report"], info["folder"] + ".md")
+        self.assertTrue(os.path.isfile(os.path.join(info["folder"], "README.md")))
+        self.assertTrue(os.path.isfile(os.path.join(info["folder"], "recompile_research.py")))
         with open(os.path.join(info["folder"], "batch-plan.json"), encoding="utf-8") as handle:
             plan = json.load(handle)
         self.assertEqual(plan[0]["decisions"], ["JURITEXTFAUTE"])
@@ -165,19 +173,65 @@ class ResearchCorpusTest(unittest.TestCase):
         quote = "Le dirigeant doit avoir connaissance des motifs et pouvoir présenter ses observations."
         with open(cards_path, "w", encoding="utf-8") as handle:
             for text_id in ("JURITEXT001", "JURITEXT002"):
+                pertinent = text_id == "JURITEXT001"
                 handle.write(json.dumps({
                     "id": text_id,
-                    "pertinent": True,
-                    "question_juridique": "contradictoire",
-                    "faits_determinants": [],
+                    "pertinent": pertinent,
                     "solution": "rejet",
-                    "portee": "condition procédurale",
-                    "sens": "neutre",
-                    "citation_exacte": quote,
-                    "incertitudes": [],
+                    "citation_exacte": quote if pertinent else "",
                 }, ensure_ascii=False) + "\n")
-        result = validate_research_cards({"folder": info["folder"]})
+        result = validate_and_compile(info["folder"])
         self.assertTrue(result["coverage_complete"])
+        self.assertEqual(result["report"], info["report"])
+        self.assertTrue(os.path.isfile(info["report"]))
+        with open(info["report"], encoding="utf-8") as handle:
+            report = handle.read()
+        self.assertIn("## Couverture", report)
+        self.assertIn("## Matrice des décisions pertinentes", report)
+        self.assertIn("| Décision | Solution | Citation | Source |", report)
+        self.assertIn("JURITEXT001", report)
+        self.assertNotIn("JURITEXT002", report)
+        with open(result["remaining_work"], encoding="utf-8") as handle:
+            self.assertIn("Validation complète. Aucun travail restant.", handle.read())
+
+    def test_compilateur_indique_les_fiches_restantes(self):
+        info = build_research_corpus({
+            "question": "Conditions de révocation",
+            "queries": ["premiere révocation"],
+            "output_dir": self.temp.name,
+            "fetch_workers": 1,
+        }, client=FakeLegifranceClient())
+        cards_path = os.path.join(info["folder"], "cards", "lot-001.jsonl")
+        with open(cards_path, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "id": "JURITEXT001",
+                "pertinent": False,
+                "solution": "",
+                "citation_exacte": "",
+            }, ensure_ascii=False) + "\n")
+
+        result = validate_and_compile(info["folder"])
+        self.assertFalse(result["coverage_complete"])
+        with open(result["remaining_work"], encoding="utf-8") as handle:
+            remaining = handle.read()
+        self.assertIn("Fiches manquantes à produire", remaining)
+        self.assertIn("JURITEXT002", remaining)
+
+    def test_compilateur_indique_toutes_les_fiches_quand_cards_est_vide(self):
+        info = build_research_corpus({
+            "question": "Conditions de révocation",
+            "queries": ["premiere révocation"],
+            "output_dir": self.temp.name,
+            "fetch_workers": 1,
+        }, client=FakeLegifranceClient())
+
+        result = validate_and_compile(info["folder"])
+        self.assertFalse(result["coverage_complete"])
+        self.assertEqual(result["cards"], 0)
+        with open(result["remaining_work"], encoding="utf-8") as handle:
+            remaining = handle.read()
+        self.assertIn("JURITEXT001", remaining)
+        self.assertIn("JURITEXT002", remaining)
 
 
 if __name__ == "__main__":

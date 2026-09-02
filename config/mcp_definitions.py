@@ -472,13 +472,13 @@ NOTE: Incluez le nom du code dans la query pour cibler un code spécifique (ex: 
     },
     {
         "name": "Build_Research_Corpus",
-        "description": "Construit un corpus jurisprudentiel exhaustif et reproductible, sans RAG : exécute plusieurs requêtes, déduplique, télécharge et scanne chaque texte intégral. Chaque décision téléchargée est préparée dans un lot borné avec son texte intégral, sans embeddings, score de sélection ni top-k. Rend la couverture et une estimation explicite des tokens.",
+        "description": "Constitue un corpus jurisprudentiel à partir d'une question, télécharge les décisions et prépare leur revue par lots. Crée un dossier documenté dans Downloads ou dans output_dir, avec les textes, les lots, les fiches et recompile_research.py pour contrôler la couverture, signaler le travail restant et produire le rapport Markdown final.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "question": {
                     "type": "string",
-                    "description": "Question de droit complète à traiter."
+                    "description": "Question de droit complète posée par le LLM. Elle sert aussi de titre lisible au dossier du corpus et au rapport Markdown final."
                 },
                 "queries": {
                     "type": "array",
@@ -527,8 +527,8 @@ NOTE: Incluez le nom du code dans la query pour cibler un code spécifique (ex: 
                     "type": "integer",
                     "minimum": 1,
                     "maximum": 100,
-                    "default": 30,
-                    "description": "Nombre maximal de décisions par lot, pour préserver la qualité d'un cartographe à bas coût."
+                    "default": 1,
+                    "description": "Nombre maximal de décisions par lot. Par défaut, chaque tâche de revue reçoit une seule décision."
                 },
                 "fetch_workers": {
                     "type": "integer",
@@ -539,40 +539,10 @@ NOTE: Incluez le nom du code dans la query pour cibler un code spécifique (ex: 
                 },
                 "output_dir": {
                     "type": "string",
-                    "description": "Dossier racine de sortie. Défaut autonome : ~/.legifrance-mcp/research/."
+                    "description": "Dossier racine de sortie choisi par l'appelant. Défaut : le dossier Downloads de l'utilisateur. Le corpus y est créé dans un sous-dossier 'AAAA-MM-JJ - Question', à côté du rapport Markdown homonyme."
                 }
             },
             "required": ["question"]
-        }
-    },
-    {
-        "name": "Validate_Research_Cards",
-        "description": "Valide le résultat de Build_Research_Corpus : exige une fiche par décision, rejette les identifiants inconnus ou dupliqués, confirme mécaniquement chaque citation dans le texte intégral et produit une matrice exhaustive ainsi qu'un rapport de couverture/tokens. Aucun LLM n'intervient dans cette validation.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "folder": {
-                    "type": "string",
-                    "description": "Dossier absolu rendu par Build_Research_Corpus."
-                },
-                "cards_file": {
-                    "type": "string",
-                    "description": "Fichier JSONL unique à valider. Si absent, tous les fichiers cards/*.jsonl du dossier sont fusionnés."
-                },
-                "usage": {
-                    "type": "object",
-                    "description": "Usage exact facultatif rendu par le fournisseur. Sans lui, le rapport marque clairement les tokens comme estimés.",
-                    "properties": {
-                        "input_tokens": {"type": "integer", "minimum": 0},
-                        "output_tokens": {"type": "integer", "minimum": 0},
-                        "reasoning_tokens": {"type": "integer", "minimum": 0},
-                        "cache_read_input_tokens": {"type": "integer", "minimum": 0},
-                        "cache_creation_input_tokens": {"type": "integer", "minimum": 0}
-                    },
-                    "additionalProperties": False
-                }
-            },
-            "required": ["folder"]
         }
     },
 

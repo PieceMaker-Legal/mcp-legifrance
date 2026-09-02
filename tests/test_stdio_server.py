@@ -49,7 +49,7 @@ class StdioServerTest(unittest.TestCase):
         })
         names = {tool["name"] for tool in response["result"]["tools"]}
         self.assertIn("Build_Research_Corpus", names)
-        self.assertIn("Validate_Research_Cards", names)
+        self.assertNotIn("Validate_Research_Cards", names)
 
     def test_chaque_outil_annonce_possede_un_handler(self):
         announced = {tool["name"] for tool in MCP_TOOLS}
