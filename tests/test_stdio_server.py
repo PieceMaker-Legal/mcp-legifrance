@@ -1,6 +1,8 @@
 import os
 import sys
+import json
 import unittest
+from unittest.mock import patch
 
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
@@ -61,6 +63,41 @@ class StdioServerTest(unittest.TestCase):
             "params": {},
         })
         self.assertEqual(response["result"], {})
+
+    def test_consulter_decision_longue_retourne_une_ressource_json_fidele(self):
+        texte_integral = (
+            "MOYENS ANNEXES\n" + "Texte officiel intégral. " * 5_100
+        )
+        with patch(
+            "tools.handlers.legifrance_client.get_decision_text",
+            return_value={"text": {
+                "titre": "Arrêt de test",
+                "nature": "REJET",
+                "texte": texte_integral,
+            }},
+        ):
+            response = process_request({
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "tools/call",
+                "params": {
+                    "name": "consulter_decision",
+                    "arguments": {"text_id": "JURITEXTLONGUE"},
+                },
+            })
+
+        serialized = json.dumps(response, ensure_ascii=False)
+        self.assertIn("JURITEXTLONGUE", serialized)
+        content = response["result"]["content"]
+        resource = next(item["resource"] for item in content if item["type"] == "resource")
+        self.assertEqual(
+            resource["uri"],
+            "legifrance://jurisprudence/JURITEXTLONGUE/texte-integral",
+        )
+        self.assertEqual(resource["mimeType"], "text/plain; charset=utf-8")
+        self.assertEqual(resource["text"], texte_integral)
+        self.assertNotIn("blob", resource)
+        self.assertNotIn("base64", resource["uri"])
 
 
 if __name__ == "__main__":

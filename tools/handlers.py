@@ -316,7 +316,8 @@ def handle_consulter_decision(args: Dict[str, Any], user_id: str) -> Dict[str, A
         nature = text.get("nature", "")
         titre = text.get("titre", "")
         visas = text.get("visas", "")
-        texte = text.get("texte", "")
+        texte_integral = text.get("texte", "")
+        texte = texte_integral
         decision_attaquee = text.get("decisionAttaquee", {})
 
         # Tronquer le texte si "MOYENS ANNEXES" présent (Cour de cassation)
@@ -361,36 +362,32 @@ def handle_consulter_decision(args: Dict[str, Any], user_id: str) -> Dict[str, A
 
         summary = "\n".join(summary_parts)
 
-        # Compter les tokens approximatifs (1 token ≈ 4 caractères)
-        estimated_tokens = len(summary) // 4
+        # Compter les tokens approximatifs du texte officiel complet. La
+        # branche longue doit rester fidèle même si l'affichage synthétique a
+        # écarté les moyens annexes.
+        estimated_tokens = len(texte_integral) // 4
 
-        # Si > 25000 tokens, déclencher un téléchargement automatique
+        # Une ressource MCP embarquée est sérialisable et lisible directement
+        # par le client. Aucun fichier local n'est annoncé ni créé à l'insu de
+        # l'appelant.
         if estimated_tokens > 25000:
-            # Nettoyer le titre pour le nom de fichier
-            safe_titre = "".join(c for c in titre if c.isalnum() or c in (' ', '-', '_')).strip()[:100]
-            filename = f"decision_{text_id}_{safe_titre}.txt"
-
-            # Retourner un message court avec la ressource téléchargeable
             short_summary = "\n".join([
                 f"DÉCISION: {titre}",
                 f"",
                 f"⚠️ **Décision trop longue** (≈ {estimated_tokens:,} tokens)".replace(',', ' '),
                 f"",
-                f"📥 **Téléchargement automatique:** {filename}",
-                f"",
                 f"Nature: {nature}",
                 f"Lien: {LEGIFRANCE_BASE_URL}/juri/id/{text_id}",
                 f"",
-                f"Le texte intégral sera téléchargé automatiquement."
+                "Le texte intégral est joint comme ressource MCP."
             ])
 
             return create_response(
                 short_summary,
                 resource={
-                    "uri": f"data:text/plain;base64,{summary}",
-                    "mimeType": "text/plain",
-                    "text": summary,
-                    "blob": summary.encode('utf-8')
+                    "uri": f"legifrance://jurisprudence/{text_id}/texte-integral",
+                    "mimeType": "text/plain; charset=utf-8",
+                    "text": texte_integral,
                 }
             )
 
