@@ -503,7 +503,7 @@ NOTE: Incluez le nom du code dans la query pour cibler un code spécifique (ex: 
                 "queries": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Formulations Légifrance complémentaires. ET est prioritaire sur OU ; les parenthèses sont acceptées. Si absent, la question est utilisée telle quelle. Pour une recherche de qualité, fournir les expressions de principe, exceptions, textes et formulations contraires."
+                    "description": "Formulations Légifrance complémentaires. ET est prioritaire sur OU ; les parenthèses sont acceptées. Exemple : (faute OU négligence) ET préjudice. Si absent, la question est utilisée telle quelle. Pour une recherche de qualité, fournir les expressions de principe, exceptions, textes et formulations contraires."
                 },
                 "juridictions": {
                     "type": "array",
