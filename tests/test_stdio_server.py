@@ -64,6 +64,47 @@ class StdioServerTest(unittest.TestCase):
         })
         self.assertEqual(response["result"], {})
 
+    def test_notification_sans_id_ne_produit_jamais_de_reponse(self):
+        for method in ("ping", "tools/list", "methode/inconnue"):
+            with self.subTest(method=method):
+                self.assertIsNone(process_request({
+                    "jsonrpc": "2.0",
+                    "method": method,
+                    "params": {},
+                }))
+
+    def test_id_null_explicite_recoit_une_reponse(self):
+        response = process_request({
+            "jsonrpc": "2.0",
+            "id": None,
+            "method": "ping",
+            "params": {},
+        })
+        self.assertEqual(response, {
+            "jsonrpc": "2.0",
+            "id": None,
+            "result": {},
+        })
+
+    def test_requete_sans_method_est_invalide_et_non_une_notification(self):
+        self.assertEqual(process_request({"jsonrpc": "2.0"}), {
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": {"code": -32600, "message": "Invalid Request"},
+        })
+
+    def test_method_non_chaine_est_une_requete_invalide(self):
+        for method in (None, 42, []):
+            with self.subTest(method=method):
+                response = process_request({
+                    "jsonrpc": "2.0",
+                    "id": 6,
+                    "method": method,
+                })
+                self.assertEqual(response["id"], 6)
+                self.assertEqual(response["error"]["code"], -32600)
+                self.assertEqual(response["error"]["message"], "Invalid Request")
+
     def test_consulter_decision_longue_retourne_une_ressource_json_fidele(self):
         texte_integral = (
             "MOYENS ANNEXES\n" + "Texte officiel intégral. " * 5_100

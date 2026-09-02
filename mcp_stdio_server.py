@@ -139,19 +139,26 @@ def process_request(data):
     """Traite une requête JSON-RPC déjà décodée.
 
     Retourne un dict de réponse JSON-RPC, ou None si aucune réponse ne doit
-    être émise (notification `notifications/*`).
+    être émise (notification sans clé ``id``).
     """
     if data.get("jsonrpc") != "2.0":
         logger.error(f"Invalid JSON-RPC version: {data.get('jsonrpc')}")
         return jsonrpc_error(data.get("id"), -32600, "Invalid jsonrpc version")
 
     method = data.get("method")
-    params = data.get("params") or {}
     request_id = data.get("id")
 
-    if not method:
-        logger.error("Missing method in request")
-        return jsonrpc_error(request_id, -32600, "Method required")
+    # Un objet incomplet ou dont ``method`` n'est pas une chaîne ne constitue
+    # pas une notification : c'est une requête JSON-RPC invalide.
+    if not isinstance(method, str) or not method:
+        logger.error("Invalid or missing method in request")
+        return jsonrpc_error(request_id, -32600, "Invalid Request")
+
+    # En JSON-RPC, l'absence de la clé ``id`` (et non sa valeur) définit une
+    # notification. ``{"id": null}`` reste donc une requête à laquelle le
+    # serveur peut répondre avec ``"id": null``.
+    is_notification = "id" not in data
+    params = data.get("params") or {}
 
     # Notifications (pas de réponse)
     if method.startswith("notifications/"):
@@ -161,16 +168,19 @@ def process_request(data):
     handler = HANDLERS.get(method)
     if not handler:
         logger.error(f"Method not found: {method}")
-        return jsonrpc_error(request_id, -32601, f"Method not found: {method}")
+        response = jsonrpc_error(request_id, -32601, f"Method not found: {method}")
+        return None if is_notification else response
 
     try:
         logger.info(f"Calling handler for: {method}")
         result = handler(params)
         logger.info(f"Handler completed successfully for: {method}")
-        return jsonrpc_success(request_id, result)
+        response = jsonrpc_success(request_id, result)
+        return None if is_notification else response
     except Exception as e:
         logger.exception(f"Internal error in {method}: {str(e)}")
-        return jsonrpc_error(request_id, -32603, f"Internal error: {str(e)}")
+        response = jsonrpc_error(request_id, -32603, f"Internal error: {str(e)}")
+        return None if is_notification else response
 
 
 def _write_response(response):
