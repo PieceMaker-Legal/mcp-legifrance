@@ -892,8 +892,8 @@ def handle_search_conseil_etat(args: Dict[str, Any], user_id: str) -> Dict[str, 
 
     # Pagination et tri
     sort = "PERTINENCE"
-    page_size = args.get("page_size", 10)
-    page_number = args.get("page_number", 1)
+    page_size = max(1, min(int(args.get("page_size", 10)), 100))
+    page_number = max(1, int(args.get("page_number", 1)))
 
     # Construction des filtres
     filtres = [
@@ -916,50 +916,77 @@ def handle_search_conseil_etat(args: Dict[str, Any], user_id: str) -> Dict[str, 
         })
 
     try:
-        # Appel API
-        result = legifrance_client.search_with_criteres(
-            fond="CETAT",
-            criteres=criteres_parsed,
-            operateur=operateur_query,
-            filtres=filtres,
-            type_champ=type_champ,
-            page_number=page_number,
-            page_size=page_size,
-            sort=sort
+        # Le fonds CETAT mélange plusieurs juridictions. Le filtre Conseil
+        # d'État est donc appliqué après avoir parcouru toutes ses pages,
+        # jusqu'à un plafond explicite et signalé.
+        scan_limit = 500
+        scan_page_size = 100
+        scan_page = 1
+        resultats_bruts = []
+        total_cetat = None
+        while len(resultats_bruts) < scan_limit:
+            requested_page_size = min(scan_page_size, scan_limit - len(resultats_bruts))
+            result = legifrance_client.search_with_criteres(
+                fond="CETAT",
+                criteres=criteres_parsed,
+                operateur=operateur_query,
+                filtres=filtres,
+                type_champ=type_champ,
+                page_number=scan_page,
+                page_size=requested_page_size,
+                sort=sort
+            )
+            batch = result.get("results", []) or []
+            reported_total = result.get("totalResultNumber")
+            try:
+                parsed_total = int(reported_total) if reported_total is not None else None
+            except (TypeError, ValueError):
+                parsed_total = None
+            if parsed_total and parsed_total > 0:
+                total_cetat = parsed_total
+            if not batch:
+                break
+            resultats_bruts.extend(batch)
+            if len(batch) < requested_page_size:
+                break
+            if total_cetat is not None and len(resultats_bruts) >= total_cetat:
+                break
+            scan_page += 1
+
+        limite_atteinte = (
+            len(resultats_bruts) >= scan_limit
+            and (total_cetat is None or len(resultats_bruts) < total_cetat)
         )
-
-        # Filtrer les résultats pour ne garder que le Conseil d'État
-        total = result.get("totalResultNumber", 0)
-        resultats_bruts = result.get("results", [])
-
-        resultats = []
+        resultats_filtres = []
         for r in resultats_bruts:
             titre = r.get("titles", [{}])[0].get("title", "")
             if "Conseil d'État" in titre or "CE" in titre[:10]:
-                resultats.append(r)
+                resultats_filtres.append(r)
 
-        # Vérifier si la requête est trop large (> 500 résultats)
-        if total > 500:
-            return create_response(
-                f"<tool-use-error>\n"
-                f"Requête trop large: {total} résultats trouvés (max 500).\n\n"
-                f"Affinez avec:\n"
-                f"- Mots-clés plus spécifiques ou opérateurs (ET, OU, \"exacte\")\n"
-                f"- Article ciblé (ex: \"L. 1142-1\")\n\n"
-                f"Note: Réduire la période seule ne garantit pas la pertinence.\n"
-                f"</tool-use-error>",
-                is_error=True
-            )
+        total_filtre = len(resultats_filtres)
+        page_start = (page_number - 1) * page_size
+        resultats = resultats_filtres[page_start:page_start + page_size]
 
         summary_parts = [
             f"**⚖️ CONSEIL D'ÉTAT**",
             f"",
             f"**Requête:** {query}",
             f"**Période:** {date_debut} → {date_fin}",
-            f"**Total CETAT:** {total:,} décisions".replace(',', ' '),
-            f"**Conseil d'État:** {len(resultats)} décisions affichées",
+            f"**CETAT parcouru avant filtre:** {len(resultats_bruts)} décisions",
+            f"**Conseil d'État filtré:** {total_filtre} décisions",
+            f"**Page:** {page_number} — {len(resultats)} décision(s) affichée(s)",
             f""
         ]
+
+        if total_cetat is not None:
+            summary_parts.append(
+                f"**Total CETAT signalé par l'API:** {total_cetat:,} décisions".replace(',', ' ')
+            )
+        if limite_atteinte:
+            summary_parts.append(
+                f"⚠️ **Limite de parcours CETAT atteinte:** {scan_limit} décisions. "
+                "Les résultats filtrés et leur total sont partiels ; affinez la requête."
+            )
 
         if publication != "TOUS":
             summary_parts.append(f"**Publication:** {publication}")
@@ -1054,8 +1081,8 @@ def handle_search_caa(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
 
     # Pagination et tri
     sort = "PERTINENCE"
-    page_size = args.get("page_size", 15)
-    page_number = args.get("page_number", 1)
+    page_size = max(1, min(int(args.get("page_size", 15)), 100))
+    page_number = max(1, int(args.get("page_number", 1)))
 
     # Construction des filtres
     filtres = [
@@ -1081,23 +1108,48 @@ def handle_search_caa(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     villes = args.get("CAA_VILLE", [])
 
     try:
-        # Appel API
-        result = legifrance_client.search_with_criteres(
-            fond="CETAT",
-            criteres=criteres_parsed,
-            operateur=operateur_query,
-            filtres=filtres,
-            type_champ=type_champ,
-            page_number=page_number,
-            page_size=page_size,
-            sort=sort
+        # Le filtre de ville s'applique sur les CAA du fonds CETAT complet,
+        # jamais sur une seule page brute. Le garde-fou est explicite dans la
+        # réponse pour ne pas présenter un sous-ensemble comme exhaustif.
+        scan_limit = 500
+        scan_page_size = 100
+        scan_page = 1
+        resultats_bruts = []
+        total_cetat = None
+        while len(resultats_bruts) < scan_limit:
+            requested_page_size = min(scan_page_size, scan_limit - len(resultats_bruts))
+            result = legifrance_client.search_with_criteres(
+                fond="CETAT",
+                criteres=criteres_parsed,
+                operateur=operateur_query,
+                filtres=filtres,
+                type_champ=type_champ,
+                page_number=scan_page,
+                page_size=requested_page_size,
+                sort=sort
+            )
+            batch = result.get("results", []) or []
+            reported_total = result.get("totalResultNumber")
+            try:
+                parsed_total = int(reported_total) if reported_total is not None else None
+            except (TypeError, ValueError):
+                parsed_total = None
+            if parsed_total and parsed_total > 0:
+                total_cetat = parsed_total
+            if not batch:
+                break
+            resultats_bruts.extend(batch)
+            if len(batch) < requested_page_size:
+                break
+            if total_cetat is not None and len(resultats_bruts) >= total_cetat:
+                break
+            scan_page += 1
+
+        limite_atteinte = (
+            len(resultats_bruts) >= scan_limit
+            and (total_cetat is None or len(resultats_bruts) < total_cetat)
         )
-
-        # Filtrer les résultats pour ne garder que les CAA
-        total = result.get("totalResultNumber", 0)
-        resultats_bruts = result.get("results", [])
-
-        resultats = []
+        resultats_filtres = []
         for r in resultats_bruts:
             titre = r.get("titles", [{}])[0].get("title", "")
 
@@ -1115,21 +1167,11 @@ def handle_search_caa(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
                 if not ville_trouvee:
                     continue
 
-            resultats.append(r)
+            resultats_filtres.append(r)
 
-        # Vérifier si la requête est trop large (> 500 résultats)
-        if total > 500:
-            return create_response(
-                f"<tool-use-error>\n"
-                f"Requête trop large: {total} résultats trouvés (max 500).\n\n"
-                f"Affinez avec:\n"
-                f"- Mots-clés plus spécifiques ou opérateurs (ET, OU, \"exacte\")\n"
-                f"- Article ciblé (ex: \"L. 421-6\")\n"
-                f"- Ville de la CAA\n\n"
-                f"Note: Réduire la période seule ne garantit pas la pertinence.\n"
-                f"</tool-use-error>",
-                is_error=True
-            )
+        total_filtre = len(resultats_filtres)
+        page_start = (page_number - 1) * page_size
+        resultats = resultats_filtres[page_start:page_start + page_size]
 
         villes_str = ", ".join(villes) if villes else "TOUTES"
 
@@ -1139,10 +1181,21 @@ def handle_search_caa(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
             f"**Requête:** {query}",
             f"**Ville(s):** {villes_str}",
             f"**Période:** {date_debut} → {date_fin}",
-            f"**Total CETAT:** {total:,} décisions".replace(',', ' '),
-            f"**CAA affichées:** {len(resultats)} décisions",
+            f"**CETAT parcouru avant filtre:** {len(resultats_bruts)} décisions",
+            f"**CAA filtrées:** {total_filtre} décisions",
+            f"**Page:** {page_number} — {len(resultats)} décision(s) affichée(s)",
             f""
         ]
+
+        if total_cetat is not None:
+            summary_parts.append(
+                f"**Total CETAT signalé par l'API:** {total_cetat:,} décisions".replace(',', ' ')
+            )
+        if limite_atteinte:
+            summary_parts.append(
+                f"⚠️ **Limite de parcours CETAT atteinte:** {scan_limit} décisions. "
+                "Les résultats filtrés et leur total sont partiels ; affinez la requête."
+            )
 
         if publication != "TOUS":
             summary_parts.append(f"**Publication:** {publication}")
