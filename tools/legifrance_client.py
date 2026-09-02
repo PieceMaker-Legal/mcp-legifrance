@@ -130,6 +130,40 @@ class LegifranceClient:
             criteres: Liste de critères déjà formatés par le parser
                      [{"valeur": "mot", "operateur": "ET", "typeRecherche": "...", "proximite": 10}, ...]
         """
+        clauses = getattr(criteres, "clauses", None)
+        # RechercheSpecifiqueDTO (spécification PISTE) définit l'opérateur de
+        # recherche entre les champs, et l'opérateur de champ entre ses
+        # critères. La DNF est ainsi envoyée en un appel : chaque clause ET
+        # devient un champ, les champs sont reliés par OU. L'API conserve donc
+        # le tri, la pagination et totalResultNumber globaux.
+        if clauses is None:
+            # Compatibilité avec les appelants qui fournissent directement une
+            # liste historique de critères, sans plan DNF.
+            search_clauses = [list(criteres)]
+            fields_operator = operateur
+            criteria_operator = operateur
+        else:
+            search_clauses = clauses
+            if len(search_clauses) > 1:
+                # Une DNF comporte plusieurs clauses : PISTE les relie par
+                # OU, et chaque clause conserve impérativement son ET.
+                fields_operator = "OU"
+                criteria_operator = "ET"
+            else:
+                # Certains outils adaptent explicitement une requête sans
+                # opérateur (première instance : OU par défaut). Un seul
+                # champ reste alors une liste de critères à relier avec
+                # l'opérateur fourni par l'appelant.
+                fields_operator = operateur
+                criteria_operator = operateur
+        champs = [
+            {
+                "criteres": list(clause),
+                "operateur": criteria_operator,
+                "typeChamp": type_champ,
+            }
+            for clause in search_clauses
+        ]
         payload = {
             "fond": fond,
             "sort": sort,
@@ -138,15 +172,9 @@ class LegifranceClient:
             "recherche": {
                 "pageNumber": page_number,
                 "pageSize": min(page_size, 100),
-                "operateur": operateur,
+                "operateur": fields_operator,
                 "fromAdvancedRecherche": False,
-                "champs": [
-                    {
-                        "criteres": criteres,
-                        "operateur": operateur,
-                        "typeChamp": type_champ
-                    }
-                ]
+                "champs": champs,
             }
         }
 

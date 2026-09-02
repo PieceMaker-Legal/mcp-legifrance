@@ -4,6 +4,20 @@
 import re
 from typing import List, Dict, Tuple, Any
 
+
+class QueryCriteria(list):
+    """Liste compatible PISTE, enrichie d'un plan booléen en forme DNF.
+
+    Une clause est un champ PISTE : ses critères sont reliés par ``ET``. Les
+    clauses sont reliées par ``OU`` via ``recherche.operateur``. La liste
+    elle-même reste disponible pour les appelants historiques qui itèrent sur
+    les critères.
+    """
+
+    def __init__(self, criteria: List[Dict[str, Any]], clauses: List[List[Dict[str, Any]]]):
+        super().__init__(criteria)
+        self.clauses = clauses
+
 def normalize_article_reference(ref: str) -> str:
     """
     Normalise une référence d'article vers le format sans point ni espace.
@@ -45,98 +59,152 @@ def parse_query(query: str, proximite: int = 10) -> Tuple[str, str, List[Dict[st
         (operateur_global, type_recherche, criteres_formatés)
     """
 
-    # Nettoyer la query
-    query = query.strip()
+    text = str(query or "").strip()
+    if not text:
+        raise ValueError("requête vide")
 
-    # Normaliser les références d'articles dans la query
-    # Pattern: L/R/D/C suivi de chiffres-chiffres (avec ou sans point/espace)
     article_pattern = r'\b([LRDC])\.?\s*(\d+[-\d]+)\b'
+    text = re.sub(
+        article_pattern,
+        lambda match: normalize_article_reference(match.group(0)),
+        text,
+        flags=re.IGNORECASE,
+    )
 
-    def replace_article(match):
-        return normalize_article_reference(match.group(0))
+    tokens = []
+    position = 0
+    while position < len(text):
+        if text[position].isspace():
+            position += 1
+            continue
+        char = text[position]
+        if char in '"«':
+            closing = '"' if char == '"' else '»'
+            end = text.find(closing, position + 1)
+            if end < 0:
+                raise ValueError("guillemets non fermés dans la requête")
+            value = text[position + 1:end].strip()
+            if not value:
+                raise ValueError("expression exacte vide")
+            tokens.append(("ATOM", value, True))
+            position = end + 1
+            continue
+        if char == '(':
+            tokens.append(("LPAREN", char, False))
+            position += 1
+            continue
+        if char == ')':
+            tokens.append(("RPAREN", char, False))
+            position += 1
+            continue
+        match = re.match(r'[^\s()]+', text[position:])
+        if not match:
+            raise ValueError(f"caractère invalide dans la requête : {char}")
+        value = match.group(0)
+        upper = value.upper()
+        tokens.append((upper if upper in {"ET", "OU"} else "ATOM", value, False))
+        position += len(value)
 
-    query = re.sub(article_pattern, replace_article, query, flags=re.IGNORECASE)
+    normalized = []
+    previous = None
+    for token in tokens:
+        kind = token[0]
+        if previous in {"ATOM", "RPAREN"} and kind in {"ATOM", "LPAREN"}:
+            normalized.append(("ET", "ET", False))
+        normalized.append(token)
+        previous = kind
+    if not normalized or normalized[-1][0] in {"ET", "OU", "LPAREN"}:
+        raise ValueError("opérateur ou parenthèse ouvrante sans terme à droite")
 
-    # Détecter les expressions exactes (entre guillemets)
-    # Pattern: "texte entre guillemets" ou « texte »
-    exact_pattern = r'["""«]([^"""»]+)["""»]'
-    exact_matches = re.findall(exact_pattern, query)
+    index = 0
 
-    # Si toute la query est une expression exacte
-    if len(exact_matches) == 1 and re.match(rf'^{exact_pattern}$', query.strip()):
-        return "ET", "EXACTE", [{
-            "valeur": exact_matches[0].strip(),
-            "operateur": "ET",
-            "typeRecherche": "EXACTE"
-        }]
+    def parse_factor():
+        nonlocal index
+        if index >= len(normalized):
+            raise ValueError("terme attendu dans la requête")
+        kind, value, exact = normalized[index]
+        if kind == "ATOM":
+            index += 1
+            return ("ATOM", value, exact)
+        if kind == "LPAREN":
+            index += 1
+            node = parse_or()
+            if index >= len(normalized) or normalized[index][0] != "RPAREN":
+                raise ValueError("parenthèse fermante manquante")
+            index += 1
+            return node
+        raise ValueError("opérateur sans terme à gauche")
 
-    # Remplacer temporairement les expressions exactes par des placeholders
-    placeholders = {}
-    for i, match in enumerate(exact_matches):
-        placeholder = f"__EXACT_{i}__"
-        placeholders[placeholder] = match.strip()
-        query = query.replace(f'"{match}"', placeholder)
-        query = query.replace(f'«{match}»', placeholder)
+    def parse_and():
+        nonlocal index
+        node = parse_factor()
+        while index < len(normalized) and normalized[index][0] == "ET":
+            index += 1
+            node = ("ET", node, parse_factor())
+        return node
 
-    # Détecter l'opérateur dominant
-    has_et = ' ET ' in query.upper()
-    has_ou = ' OU ' in query.upper()
+    def parse_or():
+        nonlocal index
+        node = parse_and()
+        while index < len(normalized) and normalized[index][0] == "OU":
+            index += 1
+            node = ("OU", node, parse_and())
+        return node
 
-    # Déterminer l'opérateur global
-    if has_et and not has_ou:
-        operateur_global = "ET"
-    elif has_ou and not has_et:
-        operateur_global = "OU"
-    elif has_et and has_ou:
-        # Mixte : privilégier ET (plus restrictif)
-        operateur_global = "ET"
-    else:
-        # Pas d'opérateur explicite : ET par défaut
-        operateur_global = "ET"
+    tree = parse_or()
+    if index != len(normalized):
+        raise ValueError("parenthèse fermante ou terme inattendu")
 
-    # Split selon les opérateurs
-    # Remplacer les opérateurs par un séparateur unique
-    normalized = query
-    normalized = re.sub(r'\s+ET\s+', ' __SEP__ ', normalized, flags=re.IGNORECASE)
-    normalized = re.sub(r'\s+OU\s+', ' __SEP__ ', normalized, flags=re.IGNORECASE)
+    max_clauses = 64
 
-    # Split
-    termes = [t.strip() for t in normalized.split('__SEP__') if t.strip()]
+    def distinct_clauses(raw_clauses):
+        """Déduplique les clauses logiquement identiques, sans les réordonner."""
+        unique = []
+        seen = set()
+        for clause in raw_clauses:
+            key = tuple((atom[1], atom[2]) for atom in clause)
+            if key not in seen:
+                seen.add(key)
+                unique.append(clause)
+        if len(unique) > max_clauses:
+            raise ValueError("formule booléenne trop complexe (maximum 64 clauses)")
+        return unique
 
-    # Si pas de séparateur trouvé, split sur les espaces
-    if len(termes) == 1 and ' ' in termes[0]:
-        termes = [t.strip() for t in termes[0].split() if t.strip()]
+    def dnf(node):
+        if node[0] == "ATOM":
+            return [[node]]
+        left, right = dnf(node[1]), dnf(node[2])
+        if node[0] == "OU":
+            return distinct_clauses(left + right)
+        clauses = [first + second for first in left for second in right]
+        return distinct_clauses(clauses)
 
-    # Construire les critères
-    criteres = []
-
-    for terme in termes:
-        # Restaurer les placeholders d'expressions exactes
-        if terme in placeholders:
-            criteres.append({
-                "valeur": placeholders[terme],
-                "operateur": operateur_global,
-                "typeRecherche": "EXACTE",
-                "proximite": None  # Pas de proximité pour expressions exactes
+    raw_clauses = dnf(tree)
+    clauses = []
+    for raw_clause in raw_clauses:
+        criteria = []
+        for _kind, value, exact in raw_clause:
+            criteria.append({
+                "valeur": value,
+                "operateur": "ET",
+                "typeRecherche": "EXACTE" if exact else "TOUS_LES_MOTS_DANS_UN_CHAMP",
+                "proximite": None if exact else proximite,
             })
-        else:
-            # Terme normal
-            criteres.append({
-                "valeur": terme,
-                "operateur": operateur_global,
-                "typeRecherche": "TOUS_LES_MOTS_DANS_UN_CHAMP",
-                "proximite": proximite
-            })
-
-    # Déterminer le type de recherche global
-    if all(c["typeRecherche"] == "EXACTE" for c in criteres):
-        type_recherche = "EXACTE"
-    elif any(c["typeRecherche"] == "EXACTE" for c in criteres):
-        type_recherche = "TOUS_LES_MOTS_DANS_UN_CHAMP"  # Mixte
-    else:
-        type_recherche = "TOUS_LES_MOTS_DANS_UN_CHAMP"
-
-    return operateur_global, type_recherche, criteres
+        clauses.append(criteria)
+    flattened = []
+    for clause in clauses:
+        for criterion in clause:
+            if criterion not in flattened:
+                # La liste historique et le plan DNF doivent exposer les mêmes
+                # objets : un appelant compatible qui ajuste un critère voit
+                # bien cet ajustement dans la clause ensuite envoyée à PISTE.
+                flattened.append(criterion)
+    operateur_global = "ET" if len(clauses) == 1 else "OU"
+    type_recherche = (
+        "EXACTE" if flattened and all(c["typeRecherche"] == "EXACTE" for c in flattened)
+        else "TOUS_LES_MOTS_DANS_UN_CHAMP"
+    )
+    return operateur_global, type_recherche, QueryCriteria(flattened, clauses)
 
 
 def build_search_payload_champs(query: str, proximite: int = 10) -> Tuple[str, str, List[Dict[str, Any]]]:
@@ -151,21 +219,22 @@ def build_search_payload_champs(query: str, proximite: int = 10) -> Tuple[str, s
         (operateur_global, type_champ, champs_structure)
     """
 
-    operateur_global, type_recherche, criteres = parse_query(query)
+    operateur_global, type_recherche, criteres = parse_query(query, proximite)
 
-    # Construire la structure pour l'API
-    champs = [{
-        "typeChamp": "ALL",
-        "operateur": operateur_global,
-        "criteres": []
-    }]
-
-    for critere in criteres:
-        champs[0]["criteres"].append({
-            "operateur": critere["operateur"],
-            "typeRecherche": critere["typeRecherche"],
-            "valeur": critere["valeur"],
-            "proximite": proximite if critere["typeRecherche"] != "EXACTE" else None
+    # PISTE combine les champs par ``recherche.operateur`` et les critères
+    # d'un champ par ``champ.operateur``. Une clause DNF devient donc un champ.
+    clauses = getattr(criteres, "clauses", [list(criteres)])
+    champs = []
+    for clause in clauses:
+        champs.append({
+            "typeChamp": "ALL",
+            "operateur": "ET",
+            "criteres": [{
+                "operateur": "ET",
+                "typeRecherche": critere["typeRecherche"],
+                "valeur": critere["valeur"],
+                "proximite": proximite if critere["typeRecherche"] != "EXACTE" else None,
+            } for critere in clause],
         })
 
     return operateur_global, "ALL", champs
