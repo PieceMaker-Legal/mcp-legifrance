@@ -38,7 +38,6 @@ def _credential(name):
 
 LEGIFRANCE_CLIENT_ID = _credential('LEGIFRANCE_CLIENT_ID')
 LEGIFRANCE_CLIENT_SECRET = _credential('LEGIFRANCE_CLIENT_SECRET')
-LEGIFRANCE_DEBUG = (os.getenv('LEGIFRANCE_DEBUG') or '').strip().lower() in ('1', 'true', 'yes', 'on')
 
 # Une application PISTE porte des identifiants DIFFÉRENTS en sandbox et en
 # production : les identifiants PISTE doivent correspondre à l'environnement,
