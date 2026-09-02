@@ -92,12 +92,21 @@ class BodaccClient:
                     "jugement": fields.get("jugement"),
                     "commercant": fields.get("commercant")
                 })
+
+            total_annonces = data.get("total_count", len(procedures))
+            alertes = []
+            if procedures:
+                alertes.append(
+                    f"⚠️ {len(procedures)} procédure(s) collective(s)"
+                )
             
             return {
                 "success": True,
                 "siren": siren,
                 "has_procedure": len(procedures) > 0,
-                "procedures": procedures
+                "procedures": procedures,
+                "total_annonces": total_annonces,
+                "alertes": alertes,
             }
         
         except requests.exceptions.RequestException as e:
