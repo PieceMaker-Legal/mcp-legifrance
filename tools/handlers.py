@@ -16,6 +16,11 @@ from tools.query_parser import parse_query
 from tools.code_parser import parse_code_query
 from tools.bulk_download import download_query_results
 from tools.research_corpus import build_research_corpus
+from tools.decision_history import (
+    HistoriqueError,
+    build_decision_history,
+    render_markdown as render_historique,
+)
 LEGIFRANCE_BASE_URL = "https://www.legifrance.gouv.fr"
 
 def create_response(text: str, resource: Dict = None, is_error: bool = False) -> Dict[str, Any]:
@@ -64,237 +69,6 @@ def handle_tracking_bodacc(args: Dict[str, Any], user_id: str) -> Dict[str, Any]
     )
 
 
-def handle_recherche_jurisprudence(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
-    """
-    Recherche dans la jurisprudence (JURI)
-    """
-    fond = args.get("fond", "JURI")
-    query = args.get("query")
-    
-    # Paramètres de recherche
-    type_champ = args.get("type_champ", "ALL")
-    type_recherche = args.get("type_recherche", "UN_DES_MOTS")
-    proximite = args.get("proximite", 10)
-    operateur = args.get("operateur", "OU")  # ✅ Ajout opérateur
-    filtres = args.get("filtres", [])
-    
-    # Pagination et tri
-    page_number = args.get("page_number", 1)
-    page_size = args.get("page_size", 10)
-    sort = args.get("sort", "PERTINENCE")
-    
-    try:
-        result = legifrance_client.search(
-            fond=fond,
-            query=query,
-            filtres=filtres,
-            type_champ=type_champ,
-            type_recherche=type_recherche,
-            proximite=proximite,
-            operateur=operateur,  # ✅ Passé à l'API
-            page_number=page_number,
-            page_size=page_size,
-            sort=sort,
-            second_sort="ID",
-            type_pagination="DEFAUT"
-        )
-        
-        # Construire le résumé
-        total = result.get("totalResultNumber", 0)
-        resultats = result.get("results", [])
-        
-        summary_parts = [
-            f"**RECHERCHE JURISPRUDENCE - {fond}**",
-            f"**Requête:** {query}",
-            f"**Type de champ:** {type_champ}",
-            f"**Résultats:** {len(resultats)} sur {total} total",
-            ""
-        ]
-        
-        # Formatter selon le fond
-        if fond == "JURI":
-            summary_parts.append("**JURISPRUDENCE JUDICIAIRE:**")
-            summary_parts.append("")
-            
-            for i, r in enumerate(resultats, 1):
-                # ✅ TOUS LES CHAMPS EXTRAITS
-                
-                # titles
-                titles = r.get("titles", [])
-                if titles:
-                    titre_complet = titles[0].get("title", "")
-                    juri_id = titles[0].get("id", "")
-                    cid = titles[0].get("cid", "")
-                else:
-                    titre_complet = "Titre non disponible"
-                    juri_id = ""
-                    cid = ""
-                
-                # Champs de base
-                nature = r.get("nature", "")
-                origin = r.get("origin", "")
-                type_doc = r.get("type", "")
-                etat = r.get("etat")
-                date = r.get("date")
-                num = r.get("num")
-                
-                # Texte et extraits
-                texte_extrait = r.get("text", "")
-                
-                # Résumés
-                resume_principal = r.get("resumePrincipal", [])
-                autre_resume = r.get("autreResume", [])
-                
-                # Sections (contient Abstrat, Résumé, etc.)
-                sections = r.get("sections", [])
-                
-                # JORF (si applicable)
-                jorf_text = r.get("jorfText")
-                num_parution = r.get("numParution")
-                date_publication = r.get("datePublication")
-                
-                # Métadonnées juridiques
-                dossiers_legislatifs = r.get("dossiersLegislatifs", [])
-                nor = r.get("nor")
-                mots_cles = r.get("motsCles", [])
-                appellations = r.get("appellations", [])
-                themes = r.get("themes", [])
-                conforme = r.get("conforme", False)
-                
-                # Pièces jointes
-                id_attachment = r.get("idAttachment")
-                size_attachment = r.get("sizeAttachment")
-                
-                # Conventions collectives (si KALI)
-                raison_sociale = r.get("raisonSociale")
-                idcc = r.get("idcc")
-                
-                # Autres
-                description_fusion = r.get("descriptionFusionHtml")
-                date_signature = r.get("dateSignature")
-                date_diffusion = r.get("dateDiffusion")
-                reference = r.get("reference")
-                more_article = r.get("moreArticle", False)
-                additional_result = r.get("additionalResult", {})
-                
-                # ===== AFFICHAGE COMPLET =====
-                summary_parts.append(f"**═══ DÉCISION N°{i} ═══**")
-                summary_parts.append(f"**Titre:** {titre_complet}")
-                summary_parts.append(f"**ID:** {juri_id} | CID: {cid}")
-                summary_parts.append(f"**Nature:** {nature} | Type: {type_doc} | Origine: {origin}")
-                
-                if date:
-                    summary_parts.append(f"**Date:** {date}")
-                if num:
-                    summary_parts.append(f"**Numéro:** {num}")
-                if etat:
-                    summary_parts.append(f"**État:** {etat}")
-                
-                summary_parts.append(f"🔗 [Lire sur Légifrance](https://www.legifrance.gouv.fr/juri/id/{juri_id})")
-                summary_parts.append("")
-                
-                # Résumés
-                if resume_principal:
-                    summary_parts.append("**📋 Résumé principal:**")
-                    for res in resume_principal:
-                        summary_parts.append(f"   {res}")
-                    summary_parts.append("")
-                
-                if autre_resume:
-                    summary_parts.append("**📋 Autre résumé:**")
-                    for res in autre_resume:
-                        summary_parts.append(f"   {res}")
-                    summary_parts.append("")
-                
-                # Sections (Abstrats, etc.)
-                if sections:
-                    summary_parts.append("**📄 Sections:**")
-                    for section in sections:
-                        extracts = section.get("extracts", [])
-                        for extract in extracts:
-                            field_name = extract.get("searchFieldName", "")
-                            values = extract.get("values", [])
-                            if values:
-                                summary_parts.append(f"   • {field_name}:")
-                                for val in values[:2]:  # Limiter à 2 valeurs
-                                    summary_parts.append(f"     {val[:300]}...")
-                    summary_parts.append("")
-                
-                # Extrait de texte
-                if texte_extrait:
-                    summary_parts.append("**📝 Extrait:**")
-                    summary_parts.append(f"   {texte_extrait[:500]}...")
-                    summary_parts.append("")
-                
-                # Métadonnées supplémentaires
-                if mots_cles:
-                    summary_parts.append(f"**🏷️ Mots-clés:** {', '.join(mots_cles)}")
-                
-                if themes:
-                    summary_parts.append(f"**📚 Thèmes:** {', '.join(themes)}")
-                
-                if nor:
-                    summary_parts.append(f"**NOR:** {nor}")
-                
-                if date_signature:
-                    summary_parts.append(f"**Date signature:** {date_signature}")
-                
-                if date_publication:
-                    summary_parts.append(f"**Date publication:** {date_publication}")
-                
-                if dossiers_legislatifs:
-                    summary_parts.append(f"**Dossiers législatifs:** {len(dossiers_legislatifs)}")
-                
-                if id_attachment:
-                    summary_parts.append(f"**📎 Pièce jointe:** ID {id_attachment} ({size_attachment} octets)")
-                
-                if raison_sociale:
-                    summary_parts.append(f"**Raison sociale:** {raison_sociale}")
-                
-                if idcc:
-                    summary_parts.append(f"**IDCC:** {idcc}")
-                
-                if conforme:
-                    summary_parts.append("**✅ Conforme**")
-                
-                summary_parts.append("")
-                summary_parts.append("─" * 80)
-                summary_parts.append("")
-        
-        # Informations sur les filtres appliqués
-        if filtres:
-            summary_parts.append("**Filtres appliqués:**")
-            for f in filtres:
-                facette = f.get("facette")
-                if "dates" in f:
-                    dates = f["dates"]
-                    summary_parts.append(f"• {facette}: {dates.get('start')} → {dates.get('end')}")
-                elif "valeurs" in f:
-                    summary_parts.append(f"• {facette}: {', '.join(f['valeurs'])}")
-                elif "valeur" in f:
-                    summary_parts.append(f"• {facette}: {f['valeur']}")
-        
-        summary = "\n".join(summary_parts)
-        
-        return create_response(
-            summary,
-            resource={
-                "uri": f"legifrance://jurisprudence/{fond}/{hash(query)}",
-                "mimeType": "application/json",
-                "text": json.dumps(result, ensure_ascii=False, indent=2)
-            }
-        )
-    
-    except Exception as e:
-        return create_response(
-            f"❌ **Erreur lors de la recherche jurisprudence**\n\n"
-            f"Fond: {fond}\n"
-            f"Requête: {query}\n"
-            f"Erreur: {str(e)}\n\n"
-            f"Vérifiez que les paramètres et filtres sont corrects.",
-            is_error=True
-        )
-    
 def handle_consulter_decision(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     """
     Récupère le texte intégral d'une décision de jurisprudence.
@@ -1846,6 +1620,30 @@ def handle_build_research_corpus(args: Dict[str, Any], user_id: str) -> Dict[str
     return create_response(summary)
 
 
+def handle_historique_judiciaire(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
+    """Reconstitue le fil procédural d'une décision (judiciaire ou administratif)."""
+    try:
+        historique = build_decision_history(args)
+    except HistoriqueError as erreur:
+        return create_response(f"<tool-use-error>\n{erreur}\n</tool-use-error>", is_error=True)
+    except Exception as erreur:
+        return create_response(
+            f"❌ **Erreur historique judiciaire**\n\n"
+            f"ID: {args.get('text_id', '')}\n"
+            f"Erreur: {erreur}",
+            is_error=True
+        )
+
+    return create_response(
+        render_historique(historique),
+        resource={
+            "uri": f"legifrance://historique/{historique['seed']}",
+            "mimeType": "application/json",
+            "text": json.dumps(historique, ensure_ascii=False, indent=2),
+        }
+    )
+
+
 TOOL_HANDLERS = {
     # Nouveaux outils optimisés
     "Search_Cour_Cassation": handle_search_cour_cassation,
@@ -1856,6 +1654,7 @@ TOOL_HANDLERS = {
     "Search_Code": handle_search_code,
     "Download_Query_Results": handle_download_query_results,
     "Build_Research_Corpus": handle_build_research_corpus,
+    "Historique_Judiciaire": handle_historique_judiciaire,
 
     # mcp_definitions.py annonce « Tracking_BODACC » (T majuscule) alors que la
     # table ne contenait que « tracking_BODACC » : l'outil annoncé tombait donc
@@ -1864,7 +1663,6 @@ TOOL_HANDLERS = {
     "Tracking_BODACC": handle_tracking_bodacc,
 
     # Anciens outils (compatibilité)
-    "recherche_jurisprudence": handle_recherche_jurisprudence,
     "consulter_decision": handle_consulter_decision,
     "consulter_article": handle_consulter_article,
     "tracking_BODACC": handle_tracking_bodacc,

@@ -7,3 +7,6 @@ logs/
 .pytest_cache/
 .requirements.sha256
 .bootstrap.lock/
+AGENTS.md
+CLAUDE.md
+diagnostic_legifrance_local.py

@@ -42,12 +42,43 @@ sans identifiants ; seuls les appels réseau les exigent.
   d'État, CAA et première instance ;
 - recherche dans les codes à une date de vigueur donnée, consultation du texte
   intégral d'un article identifié et consultation du texte intégral d'une décision ;
+- reconstitution du fil procédural d'une décision (appel, pourvoi, cassation,
+  arrêt de renvoi, pourvoi suivant), dans l'ordre judiciaire comme
+  administratif, chaque maillon portant sa preuve et son degré de certitude,
+  assortie du relevé des décisions qui citent la décision de départ — chacune
+  retenue seulement si son texte reprend littéralement le numéro cité ;
 - suivi BODACC par SIREN ;
 - téléchargement déterministe d'une requête ;
 - construction et validation d'un corpus jurisprudentiel exhaustif sans RAG,
   embeddings ni top-k.
 
 Le serveur fournit également un dictionnaire juridique.
+
+## Syntaxe des recherches
+
+Les outils `Search_Cour_Cassation`, `Search_Cour_Appel`,
+`Search_Conseil_Etat`, `Search_CAA`, `Search_Code`,
+`Download_Query_Results` et `Build_Research_Corpus` partagent la même syntaxe :
+
+- les guillemets délimitent une expression exacte : `"faute grave"` ;
+- `ET` exige les deux côtés et est prioritaire sur `OU` ;
+- les parenthèses modifient le regroupement : `(A OU B) ET C` ;
+- les références telles que `L. 1235-3` et `L1235-3` sont normalisées ;
+- sans opérateur explicite, les mots non entre guillemets sont reliés par `ET`.
+
+Exemple :
+
+```text
+("faute grave" OU "faute lourde") ET licenciement
+```
+
+`Search_Premiere_Instance` reconnaît la même syntaxe, mais relie par `OU` les
+mots non entre guillemets lorsqu'aucun opérateur n'est explicite, afin d'élargir
+ce corpus limité. Utiliser `ET` explicitement lorsqu'un cumul est requis.
+
+L'ancien alias interne `recherche_jurisprudence` a été supprimé. Utiliser les
+outils spécialisés ci-dessus, qui appliquent les filtres propres à chaque fonds
+et rendent leurs limites explicites.
 
 ## Développement
 

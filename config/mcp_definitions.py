@@ -2,6 +2,34 @@
 #! MCP SERVEUR LOCAL
 """Définition des outils MCP disponibles"""
 
+QUERY_SYNTAX_DESCRIPTION = """Syntaxe de requête commune :
+
+- Les guillemets délimitent une expression exacte : `"faute grave"`.
+- `ET` exige les deux côtés ; `OU` accepte l'un des deux côtés.
+- `ET` est prioritaire sur `OU` : `A OU B ET C` signifie `A OU (B ET C)`.
+- Les parenthèses changent ce regroupement : `(A OU B) ET C`.
+- Les références d'article (`L. 1235-3`, `L1235-3`, `R. 2242-1`) sont normalisées automatiquement.
+
+Exemple non ambigu : `("faute grave" OU "faute lourde") ET licenciement`."""
+
+QUERY_SYNTAX_ET_DESCRIPTION = (
+    QUERY_SYNTAX_DESCRIPTION
+    + """
+
+Sans opérateur explicite, les mots non entre guillemets sont reliés par `ET` :
+`faute grave licenciement`."""
+)
+
+QUERY_SYNTAX_PREMIERE_INSTANCE_DESCRIPTION = (
+    QUERY_SYNTAX_DESCRIPTION
+    + """
+
+En première instance, sans `ET` ou `OU` explicite, les mots non entre guillemets
+sont reliés par `OU` afin d'élargir ce corpus limité : `divorce pension`. Les
+guillemets et parenthèses restent interprétés ; les opérateurs explicites
+conservent la logique commune."""
+)
+
 MCP_TOOLS = [
 # ============================================================================
     # OUTILS RECHERCHE JURISPRUDENCE - VERSION OPTIMISÉE
@@ -14,28 +42,7 @@ MCP_TOOLS = [
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": """Mots-clés avec opérateurs logiques et recherche par article visé.
-
-SYNTAXE SUPPORTÉE:
-1. Mots simples: "faute grave licenciement" → cherche les 3 mots (ET automatique)
-2. Opérateur ET: "faute" ET "employeur" → les 2 mots obligatoires
-3. Opérateur OU: "faute" OU "employeur" → au moins un des 2 mots
-4. Expression exacte: "faute de l'employeur" → phrase exacte (avec guillemets)
-5. Référence article: "L. 1235-3" ou "L1235-3" → décisions citant cet article (normalisé automatiquement)
-6. Mixte: "faute grave" ET "L. 1235-3" → combine mots-clés et article
-7. Multiple: FAUTE ET Employeur ET LICENCIEMENT → les 3 mots obligatoires
-
-EXEMPLES CONCRETS:
-✅ "faute grave licenciement" → mots-clés simples
-✅ "faute" ET "employeur" → opérateur ET
-✅ "L. 1235-3" → article du Code du travail (indemnité licenciement)
-✅ "L. 1235-3" ET "faute grave" → article + contexte
-✅ "L. 1234-1" OU "L. 1234-5" → plusieurs articles
-✅ "clause de non-concurrence" → expression exacte
-✅ "L.2262-14" → article conventions collectives (point facultatif)
-
-NOTE: Les références d'articles (L.1234-1, R.1234-2, D.1234-3) sont automatiquement normalisées.
-Le système parse automatiquement et optimise la requête."""
+                    "description": QUERY_SYNTAX_ET_DESCRIPTION
                 },
                 "matiere": {
                     "type": "array",
@@ -83,17 +90,7 @@ Le système parse automatiquement et optimise la requête."""
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": """Mots-clés avec opérateurs logiques et recherche par article visé.
-
-Syntaxe identique à Search_Cour_Cassation:
-- Mots simples → ET automatique
-- "mot1" ET "mot2" → opérateur ET explicite
-- "mot1" OU "mot2" → opérateur OU explicite
-- "expression exacte" → entre guillemets
-- "L. 1235-3" ou "L1235-3" → décisions citant cet article (normalisé auto)
-- Mixte: "divorce" ET "L. 229" → mots-clés + article
-
-Exemples: "divorce prestation compensatoire", "L. 229" ET "prestation", "L. 373-2-9"."""
+                    "description": QUERY_SYNTAX_ET_DESCRIPTION
                 },
                 "APPEL_SIEGE_APPEL": {
                     "type": "array",
@@ -134,24 +131,7 @@ Exemples: "divorce prestation compensatoire", "L. 229" ET "prestation", "L. 373-
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": """Mots-clés avec opérateurs logiques et recherche par article visé.
-
-SYNTAXE SUPPORTÉE:
-1. Mots simples: "responsabilité hospitalière" → cherche les 2 mots (ET automatique)
-2. Opérateur ET: "responsabilité" ET "faute" → les 2 mots obligatoires
-3. Opérateur OU: "responsabilité" OU "faute" → au moins un des 2 mots
-4. Expression exacte: "responsabilité sans faute" → phrase exacte (avec guillemets)
-5. Référence article: "L. 1235-3" → décisions citant cet article (normalisé automatiquement)
-6. Mixte: "responsabilité" ET "L. 1142-1" → combine mots-clés et article
-
-EXEMPLES CONCRETS:
-✅ "responsabilité hospitalière" → mots-clés simples
-✅ "responsabilité" ET "établissement public" → opérateur ET
-✅ "L. 1142-1" → article du Code de la santé publique
-✅ "annulation acte administratif" → contexte administratif
-✅ "principe égalité" OU "principe neutralité" → plusieurs principes
-
-NOTE: Les références d'articles sont automatiquement normalisées."""
+                    "description": QUERY_SYNTAX_ET_DESCRIPTION
                 },
                 "PUBLICATION_RECUEIL": {
                     "type": "string",
@@ -190,17 +170,7 @@ NOTE: Les références d'articles sont automatiquement normalisées."""
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": """Mots-clés avec opérateurs logiques et recherche par article visé.
-
-Syntaxe identique à Search_Conseil_Etat:
-- Mots simples → ET automatique
-- "mot1" ET "mot2" → opérateur ET explicite
-- "mot1" OU "mot2" → opérateur OU explicite
-- "expression exacte" → entre guillemets
-- "L. 1235-3" ou "L1235-3" → décisions citant cet article (normalisé auto)
-- Mixte: "urbanisme" ET "L. 123-1" → mots-clés + article
-
-Exemples: "permis de construire", "L. 421-6" ET "urbanisme", "refus titre séjour"."""
+                    "description": QUERY_SYNTAX_ET_DESCRIPTION
                 },
                 "CAA_VILLE": {
                     "type": "array",
@@ -247,26 +217,7 @@ Exemples: "permis de construire", "L. 421-6" ET "urbanisme", "refus titre séjou
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": """Mots-clés avec opérateurs logiques et recherche par article visé.
-
-SYNTAXE SUPPORTÉE:
-1. Mots simples: "divorce pension alimentaire" → cherche avec OU (au moins un mot)
-2. Opérateur ET: "divorce" ET "pension" → les 2 mots obligatoires
-3. Opérateur OU: "divorce" OU "séparation" → au moins un des 2 mots
-4. Expression exacte: "pension alimentaire" → phrase exacte (avec guillemets)
-5. Référence article: "L. 1235-3" ou "L1235-3" → décisions citant cet article (normalisé auto)
-6. Combinaisons: "divorce" ET "pension alimentaire" ET "L. 229" → mixte
-
-EXEMPLES:
-- "licenciement" → décisions contenant au moins ce mot
-- "L. 1235-3" → décisions citant cet article du Code du travail
-- "L. 1235-3" ET "faute grave" → article + contexte
-- "divorce" ET "pension" → décisions avec les 2 mots
-- "clause de non-concurrence" → expression exacte
-- "prud'hommes" ET "rappel salaire" → termes combinés
-
-NOTE: Volume très faible en première instance (~50 décisions totales), opérateur OU par défaut sauf si ET/OU explicite dans la query.
-Les références d'articles (L., R., D.) sont automatiquement normalisées."""
+                    "description": QUERY_SYNTAX_PREMIERE_INSTANCE_DESCRIPTION
                 },
                 "PREMIER_DEGRE_TYPE_JURIDICTION": {
                     "type": "array",
@@ -332,42 +283,12 @@ Chaque famille est etendue aux valeurs reelles de la facette officielle PREMIER_
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": """Recherche avec détection automatique du format.
-
-FORMATS SUPPORTÉS:
-
-1. RÉFÉRENCE D'ARTICLE EXACTE:
-   - "L. 1234-1" ou "L.1234-1" ou "L 1234-1" ou "L1234-1"
-   - "R. 2242-1" (articles réglementaires)
-   - "D. 1234-56" (articles décrets)
-   → Recherche exacte dans NUM_ARTICLE (normalisé automatiquement)
-
-2. MOTS-CLÉS SIMPLES:
-   - "licenciement économique" → cherche les 2 mots (ET automatique)
-   - "faute grave" → cherche les 2 mots
-
-3. OPÉRATEUR ET EXPLICITE:
-   - "licenciement" ET "motif économique" → les 2 termes obligatoires
-
-4. OPÉRATEUR OU EXPLICITE:
-   - "démission" OU "rupture conventionnelle" → au moins un des termes
-
-5. EXPRESSION EXACTE (guillemets):
-   - "clause de non-concurrence" → phrase exacte
-   - "faute lourde de l'employeur" → expression exacte
-
-6. COMBINAISONS:
-   - "L1234-1 ET indemnité" → article + mot-clé
-   - "Code du travail" ET "licenciement" ET "économique"
-
-EXEMPLES CONCRETS:
-- "L1235-3" → trouve l'article L. 1235-3 (indemnité licenciement)
-- "licenciement pour motif économique" → articles sur ce sujet
-- "clause de mobilité" → expression exacte
-- "préavis" ET "démission" → articles contenant les 2 mots
-- "rupture" OU "résiliation" → articles avec l'un ou l'autre
-
-NOTE: Incluez le nom du code dans la query pour cibler un code spécifique (ex: "752 code de procédure civile")."""
+                    "description": (
+                        QUERY_SYNTAX_ET_DESCRIPTION
+                        + "\n\nPour une référence d'article seule, Search_Code cible le champ "
+                        "NUM_ARTICLE. Ajoutez le nom du code si nécessaire, par exemple "
+                        "`752 code de procédure civile`."
+                    )
                 },
                 "date": {
                     "type": "string",
@@ -425,6 +346,69 @@ NOTE: Incluez le nom du code dans la query pour cibler un code spécifique (ex: 
                 "required": ["text_id"]
             }
         },
+    {
+        "name": "Historique_Judiciaire",
+        "description": (
+            "Rend en un seul appel deux relevés distincts pour une décision, sans jamais les "
+            "mélanger. 1° L'HISTORIQUE PROCÉDURAL STRICT : la décision attaquée, celle qu'elle "
+            "attaquait, et les décisions qui attaquent une décision du fil. Chaque maillon repose "
+            "exclusivement sur la métadonnée officielle « décision attaquée » (juridiction et date "
+            "identiques) : aucun lien n'est déduit d'une citation, d'une date ou d'une juridiction "
+            "commune. 2° LE RELEVÉ « CITÉE PAR » : toutes les décisions du fonds dont le texte "
+            "reprend littéralement un numéro d'affaire de la décision de départ, avec la citation "
+            "exacte et le lien Légifrance ; ce relevé recense sans rattacher — un précédent cité "
+            "y figure comme un recours, et il revient au lecteur de trancher. Une décision "
+            "attaquée nommée par les métadonnées mais absente de la base (jugements de première "
+            "instance et beaucoup d'arrêts d'appel ne sont pas publiés) est déclarée non résolue, "
+            "jamais devinée. Dans le fonds CETAT, la métadonnée « décision attaquée » n'est jamais "
+            "renseignée : l'historique procédural d'une décision administrative y est vide par "
+            "construction, seul le relevé « citée par » est exploitable. Un relevé tronqué par un "
+            "plafond est signalé comme tel, afin qu'une absence ne soit jamais confondue avec une "
+            "limite atteinte."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text_id": {
+                    "type": "string",
+                    "pattern": "^(JURITEXT|CETATEXT)[0-9]+$",
+                    "description": (
+                        "Identifiant officiel de la décision de départ : JURITEXT000047074185 "
+                        "(ordre judiciaire) ou CETATEXT000047444867 (ordre administratif)."
+                    )
+                },
+                "max_decisions": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 60,
+                    "default": 20,
+                    "description": "Nombre maximal de décisions retenues dans le fil."
+                },
+                "max_citations": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 200,
+                    "default": 50,
+                    "description": (
+                        "Nombre maximal de décisions citantes relevées. 0 désactive le relevé "
+                        "« citée par » et réserve le budget d'appels au fil procédural."
+                    )
+                },
+                "max_api_calls": {
+                    "type": "integer",
+                    "minimum": 2,
+                    "maximum": 600,
+                    "default": 200,
+                    "description": (
+                        "Plafond d'appels API (recherches + consultations), fil procédural et "
+                        "relevé des citations compris. Toute troncature par ce plafond est "
+                        "signalée dans la télémétrie."
+                    )
+                }
+            },
+            "required": ["text_id"]
+        }
+    },
     # ============================================================================
     # TOOL 4 : TRACKING (BODACC)
     # ============================================================================
@@ -456,7 +440,7 @@ NOTE: Incluez le nom du code dans la query pour cibler un code spécifique (ex: 
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Requête (même syntaxe que les outils Search_* : mots-clés, ET/OU, \"expression exacte\", référence d'article)."
+                    "description": QUERY_SYNTAX_ET_DESCRIPTION
                 },
                 "juridiction": {
                     "type": "string",
@@ -503,7 +487,12 @@ NOTE: Incluez le nom du code dans la query pour cibler un code spécifique (ex: 
                 "queries": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Formulations Légifrance complémentaires. Les guillemets imposent une expression exacte ; les parenthèses regroupent les alternatives reliées par OU. Exemple : \"société anonyme\" ET \"révocation\" ET (\"dirigeant\" OU \"mandataire social\"). Si absent, la question est utilisée telle quelle. Pour une recherche de qualité, fournir les expressions de principe, exceptions, textes et formulations contraires."
+                    "description": (
+                        "Formulations Légifrance complémentaires ; chaque élément suit cette syntaxe. "
+                        + QUERY_SYNTAX_ET_DESCRIPTION
+                        + "\n\nSi absent, la question est utilisée telle quelle. Pour une recherche de "
+                        "qualité, fournir les expressions de principe, exceptions, textes et formulations contraires."
+                    )
                 },
                 "juridictions": {
                     "type": "array",
