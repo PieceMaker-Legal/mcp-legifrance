@@ -42,19 +42,19 @@ sans identifiants ; seuls les appels réseau les exigent.
   d'État, CAA et première instance ;
 - recherche dans les codes à une date de vigueur donnée, consultation du texte
   intégral d'un article identifié et consultation du texte intégral d'une décision ;
-- reconstitution du fil procédural d'une décision (appel, pourvoi, cassation,
-  arrêt de renvoi, pourvoi suivant), dans l'ordre judiciaire comme
-  administratif, chaque maillon portant sa preuve et son degré de certitude,
-  assortie du relevé des décisions qui citent la décision de départ — chacune
-  retenue seulement si son texte reprend littéralement le numéro cité ;
+- historique procédural strict d'une décision, établi sur la seule métadonnée
+  officielle « décision attaquée » — jamais sur une citation —, assorti du
+  relevé séparé des décisions qui citent la décision de départ, chacune retenue
+  seulement si son texte reprend littéralement son numéro. Le fonds CETAT ne
+  renseignant pas cette métadonnée, l'historique d'une décision administrative
+  est vide par construction, et l'outil le déclare ;
 - suivi BODACC par SIREN ;
 - recherche en temps réel dans le lexique juridique officiel de justice.fr
   avec l'outil `dictionnaire_juridique` ;
-- téléchargement déterministe d'une requête ;
 - construction et validation d'un corpus jurisprudentiel exhaustif sans RAG,
   embeddings ni top-k.
 
-Le serveur fournit également un dictionnaire juridique.
+Le serveur fournit également un lexique de l’API Légifrance.
 
 ## Syntaxe des recherches
 

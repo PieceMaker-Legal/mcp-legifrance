@@ -30,11 +30,12 @@ class StdioServerTest(unittest.TestCase):
         self.assertIn("inclus-le obligatoirement", response["result"]["instructions"])
         self.assertEqual(response["result"]["instructions"].count("société anonyme"), 1)
 
-    def test_seul_le_dictionnaire_est_expose_comme_ressource(self):
+    def test_seul_le_lexique_api_legifrance_est_expose_comme_ressource(self):
         self.assertEqual(
             [resource["uri"] for resource in MCP_RESOURCES],
             ["resource://dictionnaire-juridique"],
         )
+        self.assertEqual(MCP_RESOURCES[0]["name"], "Lexique API Légifrance")
 
     def test_aucun_prompt_de_conclusions_n_est_expose(self):
         response = process_request({
