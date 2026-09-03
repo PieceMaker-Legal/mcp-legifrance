@@ -2,6 +2,7 @@
 
 import os
 import sys
+import json
 import unittest
 
 
@@ -10,9 +11,8 @@ sys.path.insert(0, ROOT)
 
 from config.mcp_definitions import (
     MCP_TOOLS,
-    QUERY_SYNTAX_DESCRIPTION,
-    QUERY_SYNTAX_ET_DESCRIPTION,
-    QUERY_SYNTAX_PREMIERE_INSTANCE_DESCRIPTION,
+    QUERY_DESCRIPTION,
+    QUERY_PREMIERE_INSTANCE_DESCRIPTION,
 )
 from tools.handlers import TOOL_HANDLERS, handle_tool_call
 
@@ -33,7 +33,7 @@ class ResearchToolContractsTest(unittest.TestCase):
     def setUp(self):
         self.tools = {tool["name"]: tool for tool in MCP_TOOLS}
 
-    def test_huit_outils_publics_partagent_la_syntaxe_complete(self):
+    def test_tools_list_ne_repete_pas_l_instruction_generale(self):
         tools_avec_requete = {
             tool["name"]
             for tool in MCP_TOOLS
@@ -44,14 +44,27 @@ class ResearchToolContractsTest(unittest.TestCase):
         for name, property_name in PUBLIC_QUERY_TOOLS.items():
             with self.subTest(tool=name):
                 description = self.tools[name]["inputSchema"]["properties"][property_name]["description"]
-                self.assertIn(QUERY_SYNTAX_DESCRIPTION, description)
-                self.assertIn('guillemets délimitent une expression exacte', description)
-                self.assertIn('parenthèses changent ce regroupement', description)
-                self.assertIn('`ET` est prioritaire sur `OU`', description)
-                self.assertIn('("faute grave" OU "faute lourde") ET licenciement', description)
-                if name != "Search_Premiere_Instance":
-                    self.assertIn(QUERY_SYNTAX_ET_DESCRIPTION, description)
-                    self.assertIn("reliés par `ET`", description)
+                self.assertNotIn("Les guillemets recherchent une expression exacte", description)
+                self.assertNotIn("les parenthèses regroupent les alternatives", description)
+
+        descriptions = json.dumps(MCP_TOOLS, ensure_ascii=False)
+        self.assertNotIn("Les guillemets recherchent une expression exacte", descriptions)
+        self.assertNotIn("société anonyme", descriptions)
+        self.assertNotIn("poser des questions de clarification plutôt que multiplier les formulations", descriptions)
+        self.assertNotIn("Il est recommandé d'inclure l'article de référence", descriptions)
+        self.assertNotIn("borner les dates à la version du texte applicable", descriptions)
+
+        for name in (
+            "Search_Cour_Cassation",
+            "Search_Cour_Appel",
+            "Search_Conseil_Etat",
+            "Search_CAA",
+            "Download_Query_Results",
+        ):
+            self.assertEqual(
+                self.tools[name]["inputSchema"]["properties"]["query"]["description"],
+                QUERY_DESCRIPTION,
+            )
 
     def test_build_corpus_exige_une_formulation_unique(self):
         schema = self.tools["Build_Research_Corpus"]["inputSchema"]
@@ -62,9 +75,18 @@ class ResearchToolContractsTest(unittest.TestCase):
 
     def test_exception_premiere_instance_est_explicite_et_centralisee(self):
         description = self.tools["Search_Premiere_Instance"]["inputSchema"]["properties"]["query"]["description"]
-        self.assertEqual(description, QUERY_SYNTAX_PREMIERE_INSTANCE_DESCRIPTION)
+        self.assertEqual(description, QUERY_PREMIERE_INSTANCE_DESCRIPTION)
         self.assertIn("reliés par `OU`", description)
-        self.assertNotIn("reliés par `ET`", description)
+        self.assertIn("Sans `ET` ou `OU` explicite", description)
+
+    def test_particularites_code_et_build_corpus_sont_preservees(self):
+        code = self.tools["Search_Code"]["inputSchema"]["properties"]
+        self.assertIn("NUM_ARTICLE", code["query"]["description"])
+        self.assertIn("version d'un article valable à une date passée", code["date"]["description"])
+
+        build = self.tools["Build_Research_Corpus"]
+        self.assertIn("au-delà de 500 résultats", build["description"])
+        self.assertIn("distincte de la question de droit", build["inputSchema"]["properties"]["query"]["description"])
 
     def test_alias_recherche_jurisprudence_n_est_plus_routable(self):
         self.assertNotIn("recherche_jurisprudence", TOOL_HANDLERS)

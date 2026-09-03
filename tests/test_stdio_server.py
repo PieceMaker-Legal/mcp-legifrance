@@ -9,7 +9,7 @@ from unittest.mock import patch
 ROOT = os.path.dirname(os.path.dirname(__file__))
 sys.path.insert(0, ROOT)
 
-from config.mcp_definitions import MCP_RESOURCES, MCP_TOOLS
+from config.mcp_definitions import INITIALIZE_INSTRUCTIONS, MCP_RESOURCES, MCP_TOOLS
 from mcp_stdio_server import process_request
 from tools.handlers import TOOL_HANDLERS
 
@@ -25,6 +25,10 @@ class StdioServerTest(unittest.TestCase):
         self.assertEqual(response["result"]["protocolVersion"], "2025-06-18")
         self.assertEqual(response["result"]["serverInfo"]["name"], "Légifrance MCP")
         self.assertNotIn("prompts", response["result"]["capabilities"])
+        self.assertEqual(response["result"]["instructions"], INITIALIZE_INSTRUCTIONS)
+        self.assertIn("Formule une seule requête", response["result"]["instructions"])
+        self.assertIn("inclus-le obligatoirement", response["result"]["instructions"])
+        self.assertEqual(response["result"]["instructions"].count("société anonyme"), 1)
 
     def test_seul_le_dictionnaire_est_expose_comme_ressource(self):
         self.assertEqual(
@@ -51,6 +55,9 @@ class StdioServerTest(unittest.TestCase):
         names = {tool["name"] for tool in response["result"]["tools"]}
         self.assertIn("Build_Research_Corpus", names)
         self.assertNotIn("Validate_Research_Cards", names)
+        serialized_tools = json.dumps(response["result"]["tools"], ensure_ascii=False)
+        self.assertNotIn("Formule une seule requête", serialized_tools)
+        self.assertNotIn("société anonyme", serialized_tools)
 
     def test_chaque_outil_annonce_possede_un_handler(self):
         announced = {tool["name"] for tool in MCP_TOOLS}

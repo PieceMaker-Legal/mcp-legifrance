@@ -28,7 +28,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger('legifrance.mcp_stdio')
 
-from config.mcp_definitions import MCP_TOOLS, MCP_RESOURCES
+from config.mcp_definitions import INITIALIZE_INSTRUCTIONS, MCP_TOOLS, MCP_RESOURCES
 from tools.handlers import handle_tool_call
 from resources import get_dictionnaire
 
@@ -71,7 +71,8 @@ def handle_initialize(params):
             "tools": {"enabled": True, "list": True, "call": True},
             "resources": {"enabled": True, "list": True, "read": True}
         },
-        "serverInfo": {"name": "Légifrance MCP", "version": "2.0.0"}
+        "serverInfo": {"name": "Légifrance MCP", "version": "2.0.0"},
+        "instructions": INITIALIZE_INSTRUCTIONS,
     }
 
 

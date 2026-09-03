@@ -2,32 +2,26 @@
 #! MCP SERVEUR LOCAL
 """Définition des outils MCP disponibles"""
 
-QUERY_SYNTAX_DESCRIPTION = """Syntaxe de requête commune :
-
-- Les guillemets délimitent une expression exacte : `"faute grave"`.
-- `ET` exige les deux côtés ; `OU` accepte l'un des deux côtés.
-- `ET` est prioritaire sur `OU` : `A OU B ET C` signifie `A OU (B ET C)`.
-- Les parenthèses changent ce regroupement : `(A OU B) ET C`.
-- Les références d'article (`L. 1235-3`, `L1235-3`, `R. 2242-1`) sont normalisées automatiquement.
-
-Exemple non ambigu : `("faute grave" OU "faute lourde") ET licenciement`."""
-
-QUERY_SYNTAX_ET_DESCRIPTION = (
-    QUERY_SYNTAX_DESCRIPTION
-    + """
-
-Sans opérateur explicite, les mots non entre guillemets sont reliés par `ET` :
-`faute grave licenciement`."""
+INITIALIZE_INSTRUCTIONS = (
+    "Formule une seule requête à partir de la question de droit et reprends impérativement "
+    "les termes choisis par l’utilisateur. N’ajoute ou ne substitue jamais un terme "
+    "sémantiquement voisin sans avoir vérifié sa définition juridique. Par exemple, la "
+    "résiliation d’un contrat, qui vaut pour l’avenir, ne se confond pas avec son annulation, "
+    "qui produit un effet rétroactif. Tout contexte ajouté doit être juridiquement précis. "
+    "Les guillemets recherchent une expression exacte ; ET exige les deux termes ; OU accepte "
+    "une alternative ; les parenthèses regroupent les alternatives. Exemple : \"société anonyme\" "
+    "ET \"révocation\" ET (\"dirigeant\" OU \"mandataire social\"). Si l’utilisateur indique "
+    "un article, inclus-le obligatoirement dans la requête et adapte les dates de recherche à la "
+    "version applicable de ce texte. Au-delà de 500 résultats, la recherche est refusée pour "
+    "manque de contexte. En cas d’incertitude sur les faits utiles ou le droit applicable, "
+    "demande une clarification."
 )
 
-QUERY_SYNTAX_PREMIERE_INSTANCE_DESCRIPTION = (
-    QUERY_SYNTAX_DESCRIPTION
-    + """
+QUERY_DESCRIPTION = "Requête Légifrance unique."
 
-En première instance, sans `ET` ou `OU` explicite, les mots non entre guillemets
-sont reliés par `OU` afin d'élargir ce corpus limité : `divorce pension`. Les
-guillemets et parenthèses restent interprétés ; les opérateurs explicites
-conservent la logique commune."""
+QUERY_PREMIERE_INSTANCE_DESCRIPTION = (
+    "Requête Légifrance unique. Sans `ET` ou `OU` explicite, les mots non entre guillemets "
+    "sont reliés par `OU` afin d'élargir ce corpus limité."
 )
 
 MCP_TOOLS = [
@@ -42,7 +36,7 @@ MCP_TOOLS = [
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": QUERY_SYNTAX_ET_DESCRIPTION
+                    "description": QUERY_DESCRIPTION
                 },
                 "matiere": {
                     "type": "array",
@@ -90,7 +84,7 @@ MCP_TOOLS = [
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": QUERY_SYNTAX_ET_DESCRIPTION
+                    "description": QUERY_DESCRIPTION
                 },
                 "APPEL_SIEGE_APPEL": {
                     "type": "array",
@@ -131,7 +125,7 @@ MCP_TOOLS = [
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": QUERY_SYNTAX_ET_DESCRIPTION
+                    "description": QUERY_DESCRIPTION
                 },
                 "PUBLICATION_RECUEIL": {
                     "type": "string",
@@ -170,7 +164,7 @@ MCP_TOOLS = [
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": QUERY_SYNTAX_ET_DESCRIPTION
+                    "description": QUERY_DESCRIPTION
                 },
                 "CAA_VILLE": {
                     "type": "array",
@@ -217,7 +211,7 @@ MCP_TOOLS = [
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": QUERY_SYNTAX_PREMIERE_INSTANCE_DESCRIPTION
+                    "description": QUERY_PREMIERE_INSTANCE_DESCRIPTION
                 },
                 "PREMIER_DEGRE_TYPE_JURIDICTION": {
                     "type": "array",
@@ -284,10 +278,9 @@ Chaque famille est etendue aux valeurs reelles de la facette officielle PREMIER_
                 "query": {
                     "type": "string",
                     "description": (
-                        QUERY_SYNTAX_ET_DESCRIPTION
-                        + "\n\nPour une référence d'article seule, Search_Code cible le champ "
-                        "NUM_ARTICLE. Ajoutez le nom du code si nécessaire, par exemple "
-                        "`752 code de procédure civile`."
+                        "Requête Légifrance unique. Pour une référence d'article seule, "
+                        "Search_Code cible le champ NUM_ARTICLE. Ajoute le nom du code si nécessaire, "
+                        "par exemple : `752 code de procédure civile`."
                     )
                 },
                 "date": {
@@ -440,7 +433,7 @@ Chaque famille est etendue aux valeurs reelles de la facette officielle PREMIER_
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": QUERY_SYNTAX_ET_DESCRIPTION
+                    "description": QUERY_DESCRIPTION
                 },
                 "juridiction": {
                     "type": "string",
@@ -480,11 +473,7 @@ Chaque famille est etendue aux valeurs reelles de la facette officielle PREMIER_
             "Constitue un corpus jurisprudentiel à partir d'une question de droit et d'une seule "
             "formulation Légifrance précise. Avant tout téléchargement, le total officiel cumulé des "
             "juridictions est contrôlé et l'appel est refusé au-delà de 500 résultats ; tout corpus "
-            "créé contient donc au plus 500 décisions dédupliquées et prépare leur revue par lots. "
-            "Avant l'appel, si les faits utiles, la période ou le droit applicable "
-            "sont insuffisants, poser des questions de clarification plutôt que multiplier les formulations. "
-            "Il est recommandé d'inclure l'article de référence lorsqu'il est connu et de borner les dates "
-            "à la version du texte applicable."
+            "créé contient donc au plus 500 décisions dédupliquées et prépare leur revue par lots."
         ),
         "inputSchema": {
             "type": "object",
@@ -496,12 +485,8 @@ Chaque famille est etendue aux valeurs reelles de la facette officielle PREMIER_
                 "query": {
                     "type": "string",
                     "description": (
-                        "Unique formulation Légifrance, distincte de la question de droit et choisie avec "
-                        "précision ; elle suit cette syntaxe. "
-                        + QUERY_SYNTAX_ET_DESCRIPTION
-                        + "\n\nNe pas fournir plusieurs formulations : si les faits, la période ou le droit "
-                        "applicable sont incertains, poser d'abord des questions. Il est recommandé d'inclure "
-                        "l'article de référence connu et de borner les dates selon la version du texte applicable."
+                        "Unique formulation Légifrance, distincte de la question de droit. Ne fournis pas "
+                        "plusieurs formulations."
                     )
                 },
                 "juridictions": {
