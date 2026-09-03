@@ -48,6 +48,8 @@ sans identifiants ; seuls les appels réseau les exigent.
   assortie du relevé des décisions qui citent la décision de départ — chacune
   retenue seulement si son texte reprend littéralement le numéro cité ;
 - suivi BODACC par SIREN ;
+- recherche en temps réel dans le lexique juridique officiel de justice.fr
+  avec l'outil `dictionnaire_juridique` ;
 - téléchargement déterministe d'une requête ;
 - construction et validation d'un corpus jurisprudentiel exhaustif sans RAG,
   embeddings ni top-k.

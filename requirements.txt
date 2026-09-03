@@ -3,3 +3,4 @@
 # appartiennent à un éventuel client et non à ce serveur autonome.
 requests>=2.31.0
 python-dotenv>=1.0.0
+truststore>=0.9.1

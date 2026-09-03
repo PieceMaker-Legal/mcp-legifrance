@@ -12,6 +12,7 @@ from tools.session_manager import session_manager
 from tools.case_manager import case_manager
 from tools.legifrance_client import legifrance_client
 from tools.bodacc_client import bodacc_client
+from tools.justice_lexicon import JusticeLexiconError, justice_lexicon_client
 from tools.query_parser import parse_query
 from tools.code_parser import parse_code_query
 from tools.research_corpus import build_research_corpus
@@ -149,6 +150,24 @@ def handle_tracking_bodacc(args: Dict[str, Any], user_id: str) -> Dict[str, Any]
             "text": json.dumps(result, ensure_ascii=False, indent=2)
         }
     )
+
+
+def handle_dictionnaire_juridique(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
+    """Recherche un terme dans le lexique officiel publié sur justice.fr."""
+    try:
+        result = justice_lexicon_client.lookup(args.get("terme", ""))
+    except (ValueError, JusticeLexiconError) as error:
+        return create_response(
+            f"<tool-use-error>\n{error}\n</tool-use-error>",
+            is_error=True,
+        )
+
+    # Une correspondance exacte rend la définition seule. À défaut, les seuls
+    # intitulés contenant tous les mots recherchés sont listés, jamais leurs
+    # définitions.
+    if result["definition"] is not None:
+        return create_response(result["definition"])
+    return create_response("\n".join(result["suggestions"]))
 
 
 def handle_consulter_decision(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
@@ -1538,6 +1557,7 @@ TOOL_HANDLERS = {
     "Search_Code": handle_search_code,
     "Build_Research_Corpus": handle_build_research_corpus,
     "Historique_Judiciaire": handle_historique_judiciaire,
+    "dictionnaire_juridique": handle_dictionnaire_juridique,
 
     # mcp_definitions.py annonce « Tracking_BODACC » (T majuscule) alors que la
     # table ne contenait que « tracking_BODACC » : l'outil annoncé tombait donc

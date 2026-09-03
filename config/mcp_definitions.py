@@ -426,6 +426,28 @@ Chaque famille est etendue aux valeurs reelles de la facette officielle PREMIER_
         }
     },
     {
+        "name": "dictionnaire_juridique",
+        "description": (
+            "Renvoie uniquement la définition d'un terme exact du lexique juridique officiel "
+            "de justice.fr. À défaut de correspondance exacte, liste uniquement les intitulés "
+            "du lexique qui contiennent tous les mots recherchés, sans leurs définitions. La "
+            "casse et les accents sont ignorés. Aucun lien, compteur ou JSON n'est ajouté. Cet "
+            "outil ne nécessite pas d'identifiants Légifrance."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "terme": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Terme juridique à rechercher dans les intitulés du lexique."
+                }
+            },
+            "required": ["terme"],
+            "additionalProperties": False
+        }
+    },
+    {
         "name": "Build_Research_Corpus",
         "description": (
             "Constitue un corpus jurisprudentiel à partir d'une question de droit et d'une seule "
