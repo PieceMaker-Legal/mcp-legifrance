@@ -90,7 +90,7 @@ MCP_TOOLS = [
                     "type": "array",
                     "items": {
                         "type": "string",
-                        "enum": ["PARIS", "VERSAILLES", "LYON", "AIX-PROVENCE", "TOULOUSE", "BORDEAUX", "RENNES", "DOUAI", "MONTPELLIER", "ROUEN", "NANCY", "DIJON", "GRENOBLE", "ANGERS", "ORLEANS", "AMIENS", "METZ", "NIMES", "LIMOGES", "CAEN", "REIMS", "BOURGES", "POITIERS", "RIOM", "PAU", "BESANCON", "AGEN", "COLMAR", "BASTIA", "CHAMBERY", "BASSE-TERRE", "FORT-DE-FRANCE", "ST-DENIS-REUNION", "NOUMEA", "PAPEETE"]
+                        "enum": ["PARIS", "VERSAILLES", "LYON", "AIX-PROVENCE", "TOULOUSE", "BORDEAUX", "RENNES", "DOUAI", "MONTPELLIER", "ROUEN", "NANCY", "DIJON", "GRENOBLE", "ANGERS", "ORLEANS", "AMIENS", "METZ", "NIMES", "LIMOGES", "CAEN", "REIMS", "BOURGES", "POITIERS", "RIOM", "PAU", "BESANCON", "AGEN", "COLMAR", "BASTIA", "CHAMBERY", "BASSE-TERRE", "FORT-DE-FRANCE", "CAYENNE", "ST-DENIS-REUNION", "NOUMEA", "PAPEETE"]
                     },
                     "description": "Cour(s) d'appel ciblée(s) par ville"
                 },
@@ -158,7 +158,7 @@ MCP_TOOLS = [
     },
     {
         "name": "Search_CAA",
-        "description": "Recherche dans la jurisprudence des COURS ADMINISTRATIVES D'APPEL avec parsing intelligent. Permet de filtrer par ville de la CAA. Le fonds CETAT n'expose pas de facette de matière ni de chambre (table officielle DILA des tris et filtres, voir docs/facettes-officielles-dila.md); le filtre de ville est appliqué côté client à partir du titre des décisions.",
+        "description": "Recherche dans la jurisprudence des COURS ADMINISTRATIVES D'APPEL avec parsing intelligent. Permet de filtrer par ville de la CAA. Le fonds CETAT n'expose pas de facette de matière ni de chambre (table officielle DILA des tris et filtres, voir docs/facettes-officielles-dila.md); le filtre de ville est appliqué côté serveur par la facette hiérarchique JURIDICTION_NATURE.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -244,7 +244,9 @@ Correspondance matiere -> famille:
 - Noumea, Papeete, Mamoudzou, Saint-Pierre: OUTRE_MER
 - conflits de competence judiciaire/administratif: TRIBUNAL_CONFLITS
 
-Chaque famille est etendue aux valeurs reelles de la facette officielle PREMIER_DEGRE_TYPE_JURIDICTION, qui mele libelles generiques ("Conseil de prud'hommes") et libelles par ville ("Tribunal correctionnel de Nice")."""
+Chaque famille est etendue aux valeurs reelles de la facette officielle PREMIER_DEGRE_TYPE_JURIDICTION, qui mele libelles generiques ("Conseil de prud'hommes") et libelles par ville ("Tribunal correctionnel de Nice").
+
+Ces jetons de famille sont une taxinomie propre a ce serveur : ils ne sont jamais envoyes tels quels a l'API. La facette officielle est contextuelle a la requete en cours, ce qui interdit d'en figer les libelles reels dans cette enumeration."""
                 },
                 "date_debut": {
                     "type": "string",
@@ -346,11 +348,17 @@ Chaque famille est etendue aux valeurs reelles de la facette officielle PREMIER_
             "mélanger. 1° L'HISTORIQUE PROCÉDURAL STRICT : la décision attaquée, celle qu'elle "
             "attaquait, et les décisions qui attaquent une décision du fil. Chaque maillon repose "
             "exclusivement sur la métadonnée officielle « décision attaquée » (juridiction et date "
-            "identiques) : aucun lien n'est déduit d'une citation, d'une date ou d'une juridiction "
-            "commune. 2° LE RELEVÉ « CITÉE PAR » : toutes les décisions du fonds dont le texte "
-            "reprend littéralement un numéro d'affaire de la décision de départ, avec la citation "
-            "exacte et le lien Légifrance ; ce relevé recense sans rattacher — un précédent cité "
-            "y figure comme un recours, et il revient au lecteur de trancher. Une décision "
+            "identiques) : aucun lien n'est déduit d'une citation. Les pourvois en cassation contre "
+            "une décision sont obtenus par l'index inverse officiel de cette métadonnée "
+            "(facettes CASSATION_DECISION_ATTAQUEE / LIEU_DECISION / DATE_DECISION_ATTAQUEE) : exact, "
+            "mais résolu au seul couple juridiction + date — la métadonnée ne portant jamais de "
+            "numéro, il ne distingue pas deux décisions de la même juridiction rendues le même jour. "
+            "Le lien vers la décision attaquée d'un degré inférieur (premier degré → appel), lui, "
+            "n'est pas indexé : il reste rapproché par une recherche bornée, que seule la métadonnée "
+            "confirme ensuite. 2° LE RELEVÉ « CITÉE PAR » : toutes les décisions du fonds dont le "
+            "texte reprend littéralement un numéro d'affaire de la décision de départ, avec la "
+            "citation exacte et le lien Légifrance ; ce relevé recense sans rattacher — un précédent "
+            "cité y figure comme un recours, et il revient au lecteur de trancher. Une décision "
             "attaquée nommée par les métadonnées mais absente de la base (jugements de première "
             "instance et beaucoup d'arrêts d'appel ne sont pas publiés) est déclarée non résolue, "
             "jamais devinée. Dans le fonds CETAT, la métadonnée « décision attaquée » n'est jamais "
@@ -525,8 +533,8 @@ Chaque famille est etendue aux valeurs reelles de la facette officielle PREMIER_
 MCP_RESOURCES = [
     {
         "uri": "resource://dictionnaire-juridique",
-        "name": "Dictionnaire juridique",
-        "description": "Définitions et terminologie juridique française",
+        "name": "Lexique API Légifrance",
+        "description": "Définitions et terminologie des données de l’API Légifrance",
         "mimeType": "text/markdown"
     }
 ]

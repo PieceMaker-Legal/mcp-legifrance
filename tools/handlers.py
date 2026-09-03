@@ -10,7 +10,7 @@ from typing import Dict, Any, Optional
 
 from tools.session_manager import session_manager
 from tools.case_manager import case_manager
-from tools.legifrance_client import legifrance_client
+from tools.legifrance_client import legifrance_client, est_date_absente, borne_haute_reelle
 from tools.bodacc_client import bodacc_client
 from tools.justice_lexicon import JusticeLexiconError, justice_lexicon_client
 from tools.query_parser import parse_query
@@ -214,14 +214,17 @@ def handle_consulter_decision(args: Dict[str, Any], user_id: str) -> Dict[str, A
             summary_parts.append(f"VISAS:")
             summary_parts.append(visas)
 
-        # Décision attaquée (si présente)
+        # Décision attaquée (si présente). La date à 2999-01-01 (ou son
+        # équivalent en millisecondes) est la sentinelle Légifrance d'absence
+        # de date : elle ne doit jamais être affichée comme une date réelle.
         if decision_attaquee:
             formation = decision_attaquee.get("formation", "")
             date_da = decision_attaquee.get("date", "")
-            if formation or date_da:
+            date_da_reelle = not est_date_absente(date_da)
+            if formation or date_da_reelle:
                 summary_parts.append(f"")
                 summary_parts.append(f"Décision attaquée: {formation}")
-                if date_da:
+                if date_da_reelle:
                     from datetime import datetime
                     date_str = datetime.fromtimestamp(date_da / 1000).strftime("%d/%m/%Y")
                     summary_parts.append(f"Date: {date_str}")
@@ -303,12 +306,12 @@ def handle_consulter_article(args: Dict[str, Any], user_id: str) -> Dict[str, An
         date_fin_ms = article.get("dateFin", 0)
 
         from datetime import datetime
-        if date_debut_ms:
+        if not est_date_absente(date_debut_ms):
             date_debut_str = datetime.fromtimestamp(date_debut_ms / 1000).strftime("%Y-%m-%d")
         else:
             date_debut_str = "?"
 
-        if date_fin_ms:
+        if not est_date_absente(date_fin_ms):
             date_fin_str = datetime.fromtimestamp(date_fin_ms / 1000).strftime("%Y-%m-%d")
         else:
             date_fin_str = "en vigueur"
@@ -445,6 +448,11 @@ def handle_search_cour_cassation(args: Dict[str, Any], user_id: str) -> Dict[str
         date_fin = datetime.now().strftime("%Y-%m-%d")
     if not date_debut:
         date_debut = (datetime.now() - timedelta(days=5*365)).strftime("%Y-%m-%d")
+    # Une borne haute à la sentinelle (2999-01-01) viderait silencieusement le
+    # résultat ; on la ramène à la dernière date réelle exploitable pour que
+    # le filtre DATE_DECISION et l'affichage « Période: » montrent la même
+    # borne, celle réellement envoyée à l'API.
+    date_fin = borne_haute_reelle(date_fin)
 
     # Pagination et tri
     sort = "PERTINENCE"  # Fixé sur PERTINENCE
@@ -611,6 +619,7 @@ def handle_search_cour_appel(args: Dict[str, Any], user_id: str) -> Dict[str, An
         date_fin = datetime.now().strftime("%Y-%m-%d")
     if not date_debut:
         date_debut = (datetime.now() - timedelta(days=3*365)).strftime("%Y-%m-%d")
+    date_fin = borne_haute_reelle(date_fin)
 
     sort = args.get("sort", "DATE_DESC")
     page_size = args.get("page_size", 15)
@@ -750,6 +759,7 @@ def handle_search_conseil_etat(args: Dict[str, Any], user_id: str) -> Dict[str, 
         date_fin = datetime.now().strftime("%Y-%m-%d")
     if not date_debut:
         date_debut = (datetime.now() - timedelta(days=5*365)).strftime("%Y-%m-%d")
+    date_fin = borne_haute_reelle(date_fin)
 
     # Pagination et tri
     sort = "PERTINENCE"
@@ -908,6 +918,7 @@ def handle_search_caa(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
         date_fin = datetime.now().strftime("%Y-%m-%d")
     if not date_debut:
         date_debut = (datetime.now() - timedelta(days=3*365)).strftime("%Y-%m-%d")
+    date_fin = borne_haute_reelle(date_fin)
 
     # Pagination et tri
     sort = "PERTINENCE"
@@ -937,71 +948,50 @@ def handle_search_caa(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     # Filtre CAA_VILLE
     villes = args.get("CAA_VILLE", [])
 
-    try:
-        # Le filtre de ville s'applique sur les CAA du fonds CETAT complet,
-        # jamais sur une seule page brute. Le garde-fou est explicite dans la
-        # réponse pour ne pas présenter un sous-ensemble comme exhaustif.
-        scan_limit = 500
-        scan_page_size = 100
-        scan_page = 1
-        resultats_bruts = []
-        total_cetat = None
-        while len(resultats_bruts) < scan_limit:
-            requested_page_size = min(scan_page_size, scan_limit - len(resultats_bruts))
-            result = legifrance_client.search_with_criteres(
-                fond="CETAT",
-                criteres=criteres_parsed,
-                operateur=operateur_query,
-                filtres=filtres,
-                type_champ=type_champ,
-                page_number=scan_page,
-                page_size=requested_page_size,
-                sort=sort
-            )
-            batch = result.get("results", []) or []
-            reported_total = result.get("totalResultNumber")
-            try:
-                parsed_total = int(reported_total) if reported_total is not None else None
-            except (TypeError, ValueError):
-                parsed_total = None
-            if parsed_total and parsed_total > 0:
-                total_cetat = parsed_total
-            if not batch:
-                break
-            resultats_bruts.extend(batch)
-            if len(batch) < requested_page_size:
-                break
-            if total_cetat is not None and len(resultats_bruts) >= total_cetat:
-                break
-            scan_page += 1
+    # La facette JURIDICTION_NATURE du fonds CETAT est hiérarchique : la
+    # forme plate {"facette": "JURIDICTION_NATURE", "valeurs": ["COURS_APPEL"]}
+    # rend HTTP 500, il faut impérativement la clé multiValeurs pour préciser
+    # les villes filles. Une liste vide sélectionne toutes les CAA. Ce filtre
+    # serveur remplace le tri côté client sur le titre, qui plafonnait le
+    # nombre de décisions atteignables à la taille du parcours.
+    filtres.append({
+        "facette": "JURIDICTION_NATURE",
+        "valeurs": ["COURS_APPEL"],
+        "multiValeurs": {"COURS_APPEL": list(villes)}
+    })
 
-        limite_atteinte = (
-            len(resultats_bruts) >= scan_limit
-            and (total_cetat is None or len(resultats_bruts) < total_cetat)
+    # L'API borne pageNumber × pageSize à 10 000, au-delà elle répond par une
+    # erreur 500 opaque. On le vérifie avant l'appel pour rendre un message clair.
+    if page_number * page_size > 10000:
+        return create_response(
+            f"<tool-use-error>\n"
+            f"Erreur recherche CAA\n"
+            f"Requête: {query}\n"
+            f"Erreur: page_number × page_size ({page_number} × {page_size} = "
+            f"{page_number * page_size}) dépasse la limite de 10 000 imposée par "
+            f"l'API Légifrance sur la profondeur de parcours. Resserrez la requête, "
+            f"réduisez la période ou choisissez une page moins profonde.\n"
+            f"</tool-use-error>",
+            is_error=True
         )
-        resultats_filtres = []
-        for r in resultats_bruts:
-            titre = r.get("titles", [{}])[0].get("title", "")
 
-            # Vérifier que c'est une CAA
-            if "CAA" not in titre:
-                continue
-
-            # Si filtre ville spécifié, vérifier la ville
-            if villes:
-                ville_trouvee = False
-                for ville in villes:
-                    if ville.upper() in titre.upper():
-                        ville_trouvee = True
-                        break
-                if not ville_trouvee:
-                    continue
-
-            resultats_filtres.append(r)
-
-        total_filtre = len(resultats_filtres)
-        page_start = (page_number - 1) * page_size
-        resultats = resultats_filtres[page_start:page_start + page_size]
+    try:
+        result = legifrance_client.search_with_criteres(
+            fond="CETAT",
+            criteres=criteres_parsed,
+            operateur=operateur_query,
+            filtres=filtres,
+            type_champ=type_champ,
+            page_number=page_number,
+            page_size=page_size,
+            sort=sort
+        )
+        resultats = result.get("results", []) or []
+        reported_total = result.get("totalResultNumber")
+        try:
+            total_api = int(reported_total) if reported_total is not None else None
+        except (TypeError, ValueError):
+            total_api = None
 
         villes_str = ", ".join(villes) if villes else "TOUTES"
 
@@ -1011,20 +1001,13 @@ def handle_search_caa(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
             f"**Requête:** {query}",
             f"**Ville(s):** {villes_str}",
             f"**Période:** {date_debut} → {date_fin}",
-            f"**CETAT parcouru avant filtre:** {len(resultats_bruts)} décisions",
-            f"**CAA filtrées:** {total_filtre} décisions",
             f"**Page:** {page_number} — {len(resultats)} décision(s) affichée(s)",
             f""
         ]
 
-        if total_cetat is not None:
+        if total_api is not None:
             summary_parts.append(
-                f"**Total CETAT signalé par l'API:** {total_cetat:,} décisions".replace(',', ' ')
-            )
-        if limite_atteinte:
-            summary_parts.append(
-                f"⚠️ **Limite de parcours CETAT atteinte:** {scan_limit} décisions. "
-                "Les résultats filtrés et leur total sont partiels ; affinez la requête."
+                f"**Total rendu par l'API:** {total_api:,} décisions".replace(',', ' ')
             )
 
         if publication != "TOUS":
@@ -1185,6 +1168,7 @@ def handle_search_premiere_instance(args: Dict[str, Any], user_id: str) -> Dict[
         date_fin = datetime.now().strftime("%Y-%m-%d")
     if not date_debut:
         date_debut = (datetime.now() - timedelta(days=5*365)).strftime("%Y-%m-%d")
+    date_fin = borne_haute_reelle(date_fin)
 
     sort = args.get("sort", "DATE_DESC")
     page_size = args.get("page_size", 20)
@@ -1452,7 +1436,7 @@ def handle_search_code(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
                             metadata.append(statut)
                         if date_debut:
                             validite = f"depuis le {date_debut}"
-                            if date_fin and not date_fin.startswith("2999-"):
+                            if date_fin and not est_date_absente(date_fin):
                                 validite += f" jusqu'au {date_fin}"
                             metadata.append(validite)
                         if metadata:

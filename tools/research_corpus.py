@@ -24,7 +24,7 @@ import time
 import unicodedata
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from tools.legifrance_client import legifrance_client
+from tools.legifrance_client import legifrance_client, est_date_absente, borne_haute_reelle
 from tools.query_parser import parse_query
 from tools import research_report_compiler
 
@@ -150,7 +150,7 @@ def _date_filter(date_debut: Optional[str], date_fin: Optional[str]) -> List[Dic
     if date_debut:
         dates["start"] = date_debut
     if date_fin:
-        dates["end"] = date_fin
+        dates["end"] = borne_haute_reelle(date_fin)
     return [{"facette": "DATE_DECISION", "dates": dates}]
 
 
@@ -268,6 +268,8 @@ def _preflight_cumulative_total(
 
 
 def _format_date(value: Any) -> str:
+    if est_date_absente(value):
+        return ""
     if isinstance(value, (int, float)):
         try:
             return datetime.fromtimestamp(value / 1000).strftime("%Y-%m-%d")

@@ -13,6 +13,59 @@ from config.settings import (
     LEGIFRANCE_API_URL
 )
 
+# L'API Légifrance n'écrit jamais l'absence de date : elle utilise le
+# 1er janvier 2999 comme sentinelle, en chaîne ISO ou en millisecondes epoch
+# (cf. docs/api-legifrance-endpoints-et-schemas.md). Cette convention est
+# propre aux charges utiles de l'API ; elle est posée ici, à la frontière
+# avec l'API, pour que les modules consommateurs partagent une seule notion
+# d'« absence de date ».
+DATE_ABSENTE_ISO = "2999-01-01"
+DATE_ABSENTE_MS = 32472144000000
+
+
+def est_date_absente(valeur: Any) -> bool:
+    """Indique si `valeur` représente l'absence de date (sentinelle 2999-01-01),
+    plutôt qu'une date réelle. Ne rejette PAS les dates négatives (antérieures
+    à 1970) ni None/chaîne vide/0, qui sont traités comme une absence de
+    valeur — donc aussi une absence de date.
+    """
+    if isinstance(valeur, bool):
+        return False
+    if valeur is None:
+        return True
+    if isinstance(valeur, (int, float)):
+        if valeur == 0:
+            return True
+        return valeur >= DATE_ABSENTE_MS
+    texte = str(valeur).strip()
+    if not texte:
+        return True
+    annee = texte[:4]
+    if not annee.isdigit():
+        return False
+    return int(annee) >= 2999
+
+
+# Mesuré sur la facette DATE_DECISION du fonds JURI (API de production) : une
+# borne haute portant exactement la sentinelle 2999-01-01 rend 0 résultat, et
+# un intervalle entièrement compris dans la sentinelle fait abandonner
+# silencieusement le filtre (le total redevient celui du fonds sans filtre).
+# 2998-12-31 mesure au contraire comme une borne réelle (même total qu'une
+# borne haute lointaine) tout en restant hors de la sentinelle : c'est donc
+# le repli sûr pour une borne haute absente.
+DATE_FIN_REELLE_MAX = "2998-12-31"
+
+
+def borne_haute_reelle(date_fin: Any) -> Any:
+    """Rend `date_fin` inchangée si c'est une date réelle, sinon
+    `DATE_FIN_REELLE_MAX`. Ne traite que la borne haute (voir mesure
+    ci-dessus) ; la borne basse n'a pas été mesurée et n'est pas concernée.
+    """
+    if est_date_absente(date_fin):
+        return DATE_FIN_REELLE_MAX
+    return date_fin
+
+
 class LegifranceClient:
     """Client pour l'API Légifrance"""
     
@@ -220,7 +273,7 @@ class LegifranceClient:
             if date_debut:
                 date_filter["dates"]["start"] = date_debut
             if date_fin:
-                date_filter["dates"]["end"] = date_fin
+                date_filter["dates"]["end"] = borne_haute_reelle(date_fin)
             payload["recherche"]["filtres"] = [date_filter]
 
         return self._request("/search", payload)
