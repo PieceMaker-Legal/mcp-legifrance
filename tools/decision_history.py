@@ -17,12 +17,22 @@ et rend deux choses, et deux seulement :
    son numéro officiel figure littéralement dans le texte consulté. Ce relevé
    ne prétend pas au rattachement procédural : il recense, sans qualifier.
 
-L'API Légifrance n'expose aucun index inverse : pour trouver les décisions dont
-la métadonnée pointe vers le fil, il faut d'abord les rapprocher par une
-recherche (nom de la juridiction attaquée à sa date exacte, numéro d'affaire
-cité). Ces recherches ne servent qu'à produire des candidats : le rattachement,
-lui, n'est prononcé que si `decisionAttaquee` le confirme. Un candidat qui cite
-le numéro sans que sa métadonnée le confirme reste au relevé « citée par ».
+Pour les arrêts de la Cour de cassation, l'API expose bel et bien un index
+inverse de cette même métadonnée : les facettes CASSATION_DECISION_ATTAQUEE,
+LIEU_DECISION et DATE_DECISION_ATTAQUEE, combinées sans aucun champ de
+recherche (une requête purement filtrée), interrogent `decisionAttaquee` dans
+l'autre sens et rendent les pourvois formés contre une décision donnée. C'est
+la même donnée officielle, seulement interrogée à l'envers : elle est donc
+admise dans le fil procédural au même titre qu'une confirmation directe. Elle
+ne résout toutefois qu'au couple juridiction + date, la métadonnée ne portant
+jamais de numéro — deux décisions de la même juridiction rendues le même jour
+lui restent indiscernables.
+
+Pour le lien inverse — une décision de premier degré vers l'arrêt d'appel qui
+la confirme ou l'infirme —, aucun index équivalent n'existe : il faut d'abord
+rapprocher un candidat par une recherche (nom de la juridiction attaquée à sa
+date exacte), que seule la métadonnée `decisionAttaquee` confirme ensuite. Un
+candidat que la métadonnée ne confirme pas reste au relevé « citée par ».
 
 Le champ `decisionAttaquee` n'est renseigné que dans le fonds JURI : dans le
 fonds CETAT il existe au schéma mais reste vide (constaté sur un échantillon de
@@ -67,9 +77,14 @@ MAX_CITATIONS_ABSOLU = 200
 CITATIONS_PAR_PAGE = 50
 PAGES_CITATIONS = 5
 
-# Garde-fous de fan-out, pour ne pas transformer un fil en balayage du fonds.
-NUMEROS_PAR_DECISION = 3
-CANDIDATS_PAR_NUMERO = 6
+# Garde-fou de fan-out, pour ne pas transformer un fil en balayage du fonds :
+# borne le nombre de résultats ramenés par un seul appel de recherche.
+RESULTATS_PAR_RECHERCHE = 6
+
+# Borne de l'index inverse (facettes CASSATION_DECISION_ATTAQUEE /
+# LIEU_DECISION / DATE_DECISION_ATTAQUEE) : un pourvoi par litige est la
+# norme, mais rien n'exclut plusieurs pourvois contre la même décision.
+MAX_POURVOIS_PAR_DECISION = 20
 
 MOIS = [
     "janvier", "février", "mars", "avril", "mai", "juin",
@@ -91,6 +106,79 @@ def _sans_accent(valeur):
 def _cle_juridiction(valeur):
     """Normalise un nom de juridiction : « Fort de France » == « Fort-de-France »."""
     return re.sub(r"[^a-z0-9]+", "", _sans_accent(valeur))
+
+
+def _motif(valeur):
+    """Normalise un nom de juridiction en mots espacés, sans accent ni
+    ponctuation : « Cour d'appel de Fort-de-France » → « cour d appel de
+    fort de france ». Sert à repérer un motif par mot entier, et à en
+    extraire les jetons de lieu (voir `_juridiction_facette` et `_lieu`)."""
+    return re.sub(r"[^a-z0-9]+", " ", _sans_accent(valeur)).strip()
+
+
+# Correspondance juridiction → valeur de la facette CASSATION_DECISION_ATTAQUEE
+# (19 valeurs, aucune autre n'existe côté API). Motifs les plus spécifiques
+# d'abord, pour qu'une dénomination générique ne masque pas une dénomination
+# plus précise qui la contient. Le « tribunal judiciaire » (juridiction issue
+# de la fusion TGI/TI de 2020) n'a AUCUNE valeur de facette : dans ce cas
+# `_juridiction_facette` rend None et `_index_inverse` se replie sur
+# LIEU_DECISION + DATE_DECISION_ATTAQUEE seuls (forme vérifiée acceptée).
+JURIDICTION_FACETTE = (
+    ("conseil de prud hommes", "CONSEIL_PRUDHOMME"),
+    ("cour d assises", "COUR_ASSISES"),
+    ("cour de cassation", "COUR_CASSATION"),
+    ("cour de justice de la republique", "COUR_JUSTICE_REPUBLIQUE"),
+    ("cour nationale de l incapacite", "COUR_NATIONAL_INCAPACITE_TARIFICATION"),
+    ("commission d indemnisation des victimes", "COMMISSION_INDEMNISATION_VICTIMES_INFRACTIONS"),
+    ("tribunal des affaires de securite sociale", "TRIBUNAL_AFFAIRES_SECURITE_SOCIALE"),
+    ("tribunal de commerce", "TRIBUNAL_COMMERCE"),
+    ("tribunal du contentieux de l incapacite", "TRIBUNAL_CONTENTIEUX_INCAPACITE"),
+    ("tribunal correctionnel", "TRIBUNAL_CORRECTIONNEL"),
+    ("tribunal des forces armees", "TRIBUNAL_FORCES_ARMEES"),
+    ("tribunal de grande instance", "TRIBUNAL_GRANDE_INSTANCE"),
+    ("tribunal d instance", "TRIBUNAL_INSTANCE"),
+    ("tribunal maritime commercial", "TRIBUNAL_MARITIME_COMMERCIAL"),
+    ("tribunal paritaire des baux ruraux", "TRIBUNAL_PARITAIRE_BAUX_RURAUX"),
+    ("tribunal de police", "TRIBUNAL_POLICE"),
+    ("tribunal de premiere instance", "TRIBUNAL_PREMIERE_INSTANCE"),
+    ("tribunal superieur d appel", "TRIBUNAL_SUPERIEURS_APPEL"),
+    ("cour d appel", "COUR_APPEL"),
+)
+
+# Mots de la dénomination générique d'une juridiction (y compris ceux des 19
+# libellés ci-dessus), retirés avant d'extraire les jetons de ville envoyés à
+# LIEU_DECISION — une recherche plein texte tokenisée en ET : trop de jetons
+# rend zéro résultat, il faut n'y garder que le nom du lieu.
+_MOTS_GENERIQUES_LIEU = {
+    "cour", "appel", "administrative", "administratif", "tribunal", "conseil",
+    "prud", "hommes", "grande", "premiere", "instance", "commerce", "assises",
+    "judiciaire", "correctionnel", "police", "paritaire", "baux", "ruraux",
+    "maritime", "commercial", "forces", "armees", "superieur", "superieurs",
+    "nationale", "incapacite", "tarification", "contentieux", "securite",
+    "sociale", "affaires", "commission", "indemnisation", "victimes",
+    "infractions", "republique", "justice", "cassation", "etat", "conseil",
+    "de", "du", "des", "la", "le", "les", "d", "l", "en", "et",
+}
+
+
+def _juridiction_facette(juridiction):
+    """Rend la valeur CASSATION_DECISION_ATTAQUEE correspondant au nom de la
+    juridiction, ou None si aucune des 19 valeurs de l'API ne correspond."""
+    motif = f" {_motif(juridiction)} "
+    for cle, valeur in JURIDICTION_FACETTE:
+        if f" {cle} " in motif:
+            return valeur
+    return None
+
+
+def _lieu(juridiction):
+    """Rend au plus deux jetons de ville pour la facette LIEU_DECISION, en
+    retirant les mots de la dénomination générique. « Cour d'appel de
+    Fort-de-France » rend ainsi [« fort », « france »] — jamais une liste de
+    mots vides, et jamais plus de deux jetons (la facette conjugue les jetons
+    en ET : au-delà de deux, elle ne rend plus rien)."""
+    jetons = [mot for mot in _motif(juridiction).split() if mot not in _MOTS_GENERIQUES_LIEU]
+    return jetons[:2]
 
 
 def _degre(juridiction):
@@ -129,6 +217,18 @@ def _echappe(expression):
     return str(expression or "").replace('"', " ").strip()
 
 
+def _identifiants(reponse):
+    """Extrait les identifiants officiels d'une réponse de recherche PISTE,
+    factorisé pour `_Traceur.rechercher` et `_Traceur.rechercher_par_filtres`."""
+    identifiants = []
+    for resultat in (reponse or {}).get("results") or []:
+        titres = resultat.get("titles") or []
+        identifiant = (titres[0] if titres else {}).get("id")
+        if identifiant:
+            identifiants.append(identifiant)
+    return identifiants
+
+
 class HistoriqueError(ValueError):
     """Erreur d'usage, rendue telle quelle à l'appelant."""
 
@@ -144,6 +244,7 @@ class _Traceur:
         self.max_appels = max_appels
         self.appels = 0
         self.recherches = 0
+        self.index_inverse = 0
         self.consultations = 0
         self.cache = {}
         self.tronque = False
@@ -175,8 +276,8 @@ class _Traceur:
         self.cache[text_id] = noeud
         return noeud
 
-    def rechercher(self, requete, filtres, taille=CANDIDATS_PAR_NUMERO, page=1):
-        """Exécute une recherche (1 appel) et rend les identifiants trouvés."""
+    def rechercher(self, requete, filtres, taille=RESULTATS_PAR_RECHERCHE, page=1):
+        """Exécute une recherche par critères (1 appel) et rend les identifiants trouvés."""
         if not self._budget():
             return []
         self.appels += 1
@@ -194,13 +295,34 @@ class _Traceur:
         except Exception as erreur:
             self.echecs.append({"requete": requete, "erreur": str(erreur)})
             return []
-        identifiants = []
-        for resultat in (reponse or {}).get("results") or []:
-            titres = resultat.get("titles") or []
-            identifiant = (titres[0] if titres else {}).get("id")
-            if identifiant:
-                identifiants.append(identifiant)
-        return identifiants
+        return _identifiants(reponse)
+
+    def rechercher_par_filtres(self, filtres, taille, page=1):
+        """
+        Interroge l'index inverse (1 appel, compté comme `rechercher`) : une
+        requête purement filtrée, sans aucune clé `champs` — `query=""` ne
+        construit aucun champ de recherche côté client, ce qui est exactement
+        la forme acceptée par l'API pour CASSATION_DECISION_ATTAQUEE /
+        LIEU_DECISION / DATE_DECISION_ATTAQUEE.
+        """
+        if not self._budget():
+            return []
+        self.appels += 1
+        self.recherches += 1
+        self.index_inverse += 1
+        try:
+            reponse = self.client.search(
+                fond=self.fond,
+                query="",
+                filtres=filtres,
+                page_size=taille,
+                page_number=page,
+                operateur="ET",
+            )
+        except Exception as erreur:
+            self.echecs.append({"filtres": filtres, "erreur": str(erreur)})
+            return []
+        return _identifiants(reponse)
 
 
 def _noeud(text_id, texte, base_lien):
@@ -280,17 +402,64 @@ def _qualifier(noeud, candidat):
     return None
 
 
+ORIGINE_INDEX_INVERSE = (
+    "index inverse de la métadonnée « décision attaquée » "
+    "(CASSATION_DECISION_ATTAQUEE / LIEU_DECISION / DATE_DECISION_ATTAQUEE)"
+)
+
+
+def _index_inverse(traceur, noeud):
+    """
+    Rend les identifiants des pourvois en cassation dont la métadonnée
+    officielle `decisionAttaquee` désigne `noeud`, trouvés par l'index inverse
+    plutôt que par une recherche de citation.
+
+    N'agit que sur le fonds JURI (seul fonds où `decisionAttaquee` existe), et
+    seulement si `noeud["date"]` est renseignée. N'émet aucune requête si ni
+    la facette de juridiction ni un lieu ne sont déterminés : une requête sur
+    la seule date rend des dizaines de décisions sans rapport (mesuré : 65 à
+    76 résultats pour la date seule, contre 4 à 11 avec un discriminant).
+    """
+    if traceur.fond != "JURI" or not noeud["date"]:
+        return []
+
+    valeur_facette = _juridiction_facette(noeud["juridiction"])
+    jetons_lieu = _lieu(noeud["juridiction"])
+    if not valeur_facette and not jetons_lieu:
+        return []
+
+    filtres = [{"facette": "DATE_DECISION_ATTAQUEE",
+                "dates": {"start": noeud["date"], "end": noeud["date"]}}]
+    if valeur_facette:
+        filtres.append({"facette": "CASSATION_DECISION_ATTAQUEE", "valeurs": [valeur_facette]})
+    if jetons_lieu:
+        # Un seul élément de `valeurs` contenant les jetons espacés : la
+        # facette conjugue les mots d'un même élément en ET (voir docstring
+        # de `_lieu`), et plusieurs éléments de la liste seraient en OU.
+        filtres.append({"facette": "LIEU_DECISION", "valeurs": [" ".join(jetons_lieu)]})
+
+    identifiants = traceur.rechercher_par_filtres(filtres, taille=MAX_POURVOIS_PAR_DECISION)
+    if len(identifiants) >= MAX_POURVOIS_PAR_DECISION:
+        # D'autres pourvois existent probablement au-delà de la borne : une
+        # troncature de l'index inverse n'est pas moins une troncature.
+        traceur.tronque = True
+    return identifiants
+
+
 def _candidats(traceur, noeud, filtres_amont):
     """
     Rapproche des décisions susceptibles d'être reliées à `noeud`. Rien n'est
-    conclu ici : l'API n'expose pas d'index inverse de `decisionAttaquee`, il
-    faut donc d'abord ramener des candidats, que `_qualifier` retient ou écarte
-    sur la seule métadonnée.
+    conclu ici : `_qualifier` retient ou écarte chaque candidat sur la seule
+    métadonnée `decisionAttaquee`.
 
     Deux sources de candidats, l'une amont, l'autre aval :
-      - la juridiction nommée par `decisionAttaquee`, à sa date exacte ;
-      - les décisions citant un numéro officiel de `noeud`, qui est la façon
-        dont un recours désigne en pratique la décision qu'il attaque.
+      - amont — la juridiction nommée par `decisionAttaquee`, à sa date
+        exacte : aucun index n'existe pour ce sens (premier degré → appel),
+        il faut ramener un candidat par recherche avant que la métadonnée ne
+        le confirme ;
+      - aval — l'index inverse officiel de la même métadonnée, qui rend
+        directement les pourvois en cassation visant `noeud`, sans recherche
+        par citation (voir `_index_inverse`).
     """
     trouvailles = []
 
@@ -304,12 +473,8 @@ def _candidats(traceur, noeud, filtres_amont):
         for identifiant in traceur.rechercher(requete, filtres=filtres):
             trouvailles.append((identifiant, "juridiction et date de la métadonnée « décision attaquée »"))
 
-    for numero in noeud["numeros"][:NUMEROS_PAR_DECISION]:
-        valeur = _echappe(numero)
-        if not valeur:
-            continue
-        for identifiant in traceur.rechercher(f'"{valeur}"', filtres=[], taille=CANDIDATS_PAR_NUMERO):
-            trouvailles.append((identifiant, f"décision citant le numéro {numero}"))
+    for identifiant in _index_inverse(traceur, noeud):
+        trouvailles.append((identifiant, ORIGINE_INDEX_INVERSE))
 
     return trouvailles
 
@@ -429,6 +594,7 @@ def build_decision_history(args, client=None):
     non_resolus = []
     a_traiter = [text_id]
     traites = set()
+    pourvois_par_index = 0
 
     while a_traiter and len(fil) < max_decisions and traceur.appels < max_appels:
         courant_id = a_traiter.pop(0)
@@ -453,6 +619,17 @@ def build_decision_history(args, client=None):
             relation, certitude, preuve = qualification
             if relation == "décision attaquée par le recours":
                 attaquee_resolue = True
+            issu_de_l_index = origine == ORIGINE_INDEX_INVERSE
+            if issu_de_l_index:
+                # L'index ne renvoie que juridiction + date, jamais de numéro :
+                # il ne distingue pas deux décisions de cette juridiction
+                # rendues ce jour-là. La certitude reste celle de `_qualifier`
+                # (l'index ne fait que fournir le candidat), mais la limite se
+                # dit dans la preuve.
+                preuve += (
+                    " — l'index ne résout qu'au couple juridiction et date : il ne "
+                    "distingue pas deux décisions de cette juridiction rendues ce jour-là"
+                )
             lien = {
                 "de": courant_id,
                 "vers": identifiant,
@@ -463,9 +640,25 @@ def build_decision_history(args, client=None):
             }
             if not any(l["vers"] == identifiant for l in fil[courant_id]["liens"]):
                 fil[courant_id]["liens"].append(lien)
+                if issu_de_l_index:
+                    pourvois_par_index += 1
             if identifiant not in fil:
                 fil[identifiant] = {"noeud": candidat, "liens": []}
                 a_traiter.append(identifiant)
+
+        # La métadonnée ne nomme que la juridiction et la date : si plusieurs
+        # décisions de cette juridiction ce jour-là figurent à la base, elle ne
+        # permet pas de les départager. Le lien reste rendu, mais sa certitude
+        # est abaissée et l'ambiguïté est dite.
+        candidates = [l for l in fil[courant_id]["liens"]
+                      if l["relation"] == "décision attaquée par le recours"]
+        if len(candidates) > 1:
+            for lien in candidates:
+                lien["certitude"] = "probable"
+                lien["preuve"] += (
+                    f" — {len(candidates)} décisions de cette juridiction à cette date "
+                    "figurent à la base : la métadonnée ne permet pas de les départager"
+                )
 
         attaquee = noeud["decision_attaquee"]
         if attaquee["formation"] and attaquee["date"] and not attaquee_resolue:
@@ -507,6 +700,8 @@ def build_decision_history(args, client=None):
         "telemetrie": {
             "appels_api": traceur.appels,
             "recherches": traceur.recherches,
+            "recherches_index_inverse": traceur.index_inverse,
+            "pourvois_par_index": pourvois_par_index,
             "consultations": traceur.consultations,
             "decisions_dans_le_fil": len(ordonne),
             "decisions_citantes": len(citations),
@@ -607,14 +802,22 @@ def render_markdown(historique):
         f"- Décisions citantes relevées : {telemetrie.get('decisions_citantes', 0)} "
         f"(plafond {telemetrie.get('plafond_citations', 0)})"
     )
+    if telemetrie.get("recherches_index_inverse"):
+        lignes.append(
+            f"- Index inverse (décision attaquée) : {telemetrie['recherches_index_inverse']} "
+            f"appel(s), {telemetrie.get('pourvois_par_index', 0)} pourvoi(s) rattaché(s) au fil"
+        )
     if telemetrie["echecs"]:
         lignes.append(f"- ⚠️ {len(telemetrie['echecs'])} appel(s) en échec, détaillés dans la ressource JSON.")
     lignes.append("")
     lignes.append(
-        "Le chaînage n'est pas fourni par l'API Légifrance. Le fil ci-dessus est reconstruit "
-        "sur la seule métadonnée officielle « décision attaquée » : chaque maillon repose sur une "
-        "égalité de métadonnées, jamais sur une citation. Les décisions citantes sont relevées à "
-        "part, sans être rattachées au fil."
+        "Les pourvois en cassation contre une décision sont obtenus par l'index inverse officiel "
+        "de la métadonnée « décision attaquée » (facettes CASSATION_DECISION_ATTAQUEE / "
+        "LIEU_DECISION / DATE_DECISION_ATTAQUEE) : exact, mais résolu au seul couple juridiction "
+        "et date, la métadonnée ne portant jamais de numéro. Le lien vers la décision attaquée "
+        "d'un degré inférieur n'est, lui, pas indexé : il repose sur une recherche bornée, "
+        "confirmée par cette même métadonnée. Les décisions citantes restent relevées à part, "
+        "sans être rattachées au fil."
     )
     if historique["ordre"] == "administratif":
         lignes.append(

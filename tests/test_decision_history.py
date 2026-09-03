@@ -3,9 +3,11 @@
 import calendar
 import json
 import os
+import re
 import sys
+import unicodedata
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 sys.path.insert(0, ROOT)
@@ -13,6 +15,7 @@ sys.path.insert(0, ROOT)
 from config.mcp_definitions import MCP_TOOLS
 from mcp_stdio_server import process_request
 from tools.decision_history import (
+    MAX_POURVOIS_PAR_DECISION,
     HistoriqueError,
     build_decision_history,
     render_markdown,
@@ -22,6 +25,48 @@ from tools.handlers import handle_historique_judiciaire
 
 def epoch(iso):
     return calendar.timegm(datetime.strptime(iso, "%Y-%m-%d").timetuple()) * 1000
+
+
+def _epoch_vers_iso(epoch_ms):
+    """Réciproque locale de `epoch()`, pour l'émulation de l'index inverse
+    dans `FauxClient.search` : ne réimporte pas `_date_iso` de production."""
+    if not isinstance(epoch_ms, (int, float)):
+        return ""
+    try:
+        return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+    except (OverflowError, OSError, ValueError):
+        return ""
+
+
+def _normalise(texte):
+    """Sans accent, minuscules, ponctuation en espaces — indépendante de
+    `_sans_accent`/`_motif` de production : l'émulation ne doit rien devoir
+    à l'implémentation qu'elle vérifie."""
+    sans_accent = unicodedata.normalize("NFKD", str(texte or ""))
+    sans_accent = "".join(c for c in sans_accent if not unicodedata.combining(c)).lower()
+    return re.sub(r"[^a-z0-9]+", " ", sans_accent).strip()
+
+
+# Petite table locale, indépendante de `JURIDICTION_FACETTE` (tools/decision_history.py) :
+# si la table de production se trompait, cette table-ci ne s'alignerait pas
+# dessus par construction. Couvre seulement ce dont les tests ont besoin.
+_FACETTE_CASSATION_DECISION_ATTAQUEE = (
+    ("cour d appel", "COUR_APPEL"),
+    ("cour de cassation", "COUR_CASSATION"),
+    ("conseil de prud hommes", "CONSEIL_PRUDHOMME"),
+    ("tribunal de commerce", "TRIBUNAL_COMMERCE"),
+    ("tribunal de grande instance", "TRIBUNAL_GRANDE_INSTANCE"),
+    # « tribunal judiciaire » : volontairement absent, aucune valeur de facette
+    # ne lui correspond côté API.
+)
+
+
+def _facette_attendue(formation):
+    motif = f" {_normalise(formation)} "
+    for cle, valeur in _FACETTE_CASSATION_DECISION_ATTAQUEE:
+        if f" {cle} " in motif:
+            return valeur
+    return None
 
 
 CA_BORDEAUX = {
@@ -80,6 +125,7 @@ class FauxClient:
         self.base = base if base is not None else BASE
         self.consultations = []
         self.recherches = []
+        self.index_inverse = []
 
     def get_decision_text(self, text_id):
         self.consultations.append(text_id)
@@ -98,6 +144,49 @@ class FauxClient:
             if trouve:
                 resultats.append({"titles": [{"id": decision["id"], "title": decision["titre"]}]})
         return {"results": resultats[:page_size], "totalResultNumber": len(resultats)}
+
+    def search(self, fond, query="", filtres=None, operateur="ET", page_size=10, page_number=1, **kwargs):
+        """Émule l'index inverse de la métadonnée `decisionAttaquee` — la
+        forme purement filtrée que `_Traceur.rechercher_par_filtres` envoie
+        pour les facettes CASSATION_DECISION_ATTAQUEE / LIEU_DECISION /
+        DATE_DECISION_ATTAQUEE. Compte comme une recherche (même identité de
+        télémétrie que `search_with_criteres`), mais consignée à part dans
+        `index_inverse` pour que les tests puissent inspecter les filtres
+        reçus sans les confondre avec une recherche par critères."""
+        assert not query, (
+            "l'index inverse doit toujours être interrogé sans champ de recherche "
+            f"(query={query!r})"
+        )
+        filtres = filtres or []
+        self.recherches.append(filtres)
+        self.index_inverse.append(filtres)
+        resultats = []
+        for decision in self.base.values():
+            attaquee = decision.get("decisionAttaquee") or {}
+            if all(self._satisfait(attaquee, filtre) for filtre in filtres):
+                resultats.append({"titles": [{"id": decision["id"], "title": decision["titre"]}]})
+        return {"results": resultats[:page_size], "totalResultNumber": len(resultats)}
+
+    def _satisfait(self, attaquee, filtre):
+        """Vrai si la métadonnée `decisionAttaquee` d'une décision de la base
+        satisfait un filtre reçu par `search`."""
+        facette = filtre["facette"]
+        if facette == "DATE_DECISION_ATTAQUEE":
+            date_iso = _epoch_vers_iso(attaquee.get("date"))
+            if not date_iso:
+                return False
+            dates = filtre["dates"]
+            return dates["start"] <= date_iso <= dates["end"]
+        if facette == "CASSATION_DECISION_ATTAQUEE":
+            valeur = _facette_attendue(attaquee.get("formation"))
+            return valeur is not None and valeur in filtre["valeurs"]
+        if facette == "LIEU_DECISION":
+            cible = _normalise(attaquee.get("formation")).split()
+            return any(
+                all(jeton in cible for jeton in combinaison.split())
+                for combinaison in filtre["valeurs"]
+            )
+        return False
 
 
 class SchemaTest(unittest.TestCase):
@@ -155,7 +244,16 @@ class FilTest(unittest.TestCase):
         # « décision attaquée » ne désigne pas la cassation : il n'est donc pas
         # un maillon procédural au sens strict, seulement une décision citante.
         self.assertNotIn("JURITEXT0003", [n["id"] for n in self.historique["fil"]])
-        self.assertEqual([l["vers"] for l in self.historique["liens"]], ["JURITEXT0001"])
+        # Deux liens portent la même relation, chacun depuis le bout qui l'a
+        # découverte : JURITEXT0002 → JURITEXT0001 par la recherche amont, et
+        # JURITEXT0001 → JURITEXT0002 par l'index inverse (la métadonnée de
+        # JURITEXT0002 désigne bien JURITEXT0001, retrouvée aussi dans l'autre
+        # sens). Le fil ne déduplique pas les deux sens d'une même relation ;
+        # non corrigé ici, hors périmètre — voir le rapport.
+        self.assertEqual(
+            sorted(l["vers"] for l in self.historique["liens"]),
+            ["JURITEXT0001", "JURITEXT0002"],
+        )
         citation = next(c for c in self.historique["citations"] if c["id"] == "JURITEXT0003")
         self.assertIn("21-15.483", citation["citation"])
         self.assertFalse(citation["dans_le_fil"])
@@ -436,6 +534,25 @@ class CassationsSuccessivesTest(unittest.TestCase):
         self.assertEqual(historique["citations"], [])
 
 
+class MetadonneeAmbigueTest(unittest.TestCase):
+    """Deux décisions de la même juridiction le même jour : la métadonnée ne
+    nomme que la juridiction et la date, elle ne peut pas les départager."""
+
+    def test_l_ambiguite_abaisse_la_certitude_et_est_dite(self):
+        jumelle = dict(CA_BORDEAUX)
+        jumelle["id"] = "JURITEXT0009"
+        jumelle["titre"] = "Cour d'appel de Bordeaux, 1re chambre civile, 10 novembre 2020, 19/09999"
+        jumelle["numeroAffaire"] = ["19/09999"]
+        base = dict(BASE)
+        base[jumelle["id"]] = jumelle
+        historique = build_decision_history({"text_id": "JURITEXT0002"}, client=FauxClient(base))
+        liens = [l for l in historique["liens"] if l["relation"] == "décision attaquée par le recours"]
+        self.assertEqual(len(liens), 2)
+        for lien in liens:
+            self.assertEqual(lien["certitude"], "probable")
+            self.assertIn("ne permet pas de les départager", lien["preuve"])
+
+
 class CitationsTest(unittest.TestCase):
     """Relevé « citée par » : toute décision citant littéralement la décision."""
 
@@ -532,6 +649,189 @@ class CitationsTest(unittest.TestCase):
         self.assertIn("Décisions citant cette décision", rendu)
         self.assertIn("Cour d'appel d'Orléans, 14 mai 2020, 19/01949", rendu)
         self.assertIn("Cite le n° 21-15.483", rendu)
+
+
+class IndexInverseTest(unittest.TestCase):
+    """Éprouve le rattachement d'un pourvoi par l'index inverse officiel de la
+    métadonnée « décision attaquée » (facettes CASSATION_DECISION_ATTAQUEE /
+    LIEU_DECISION / DATE_DECISION_ATTAQUEE) : une requête purement filtrée,
+    sans champ de recherche, qui trouve un pourvoi même quand son texte ne
+    cite aucun numéro de la décision de départ — ce que l'ancien chemin par
+    citation ne pouvait pas faire."""
+
+    CA_LYON = {
+        "id": "JURITEXT0101",
+        "titre": "Cour d'appel de Lyon, 1re chambre, 5 mars 2021, 20/01111",
+        "juridiction": "Cour d'appel de Lyon",
+        "natureJuridiction": "Cour d'appel",
+        "nature": "ARRET",
+        "formation": "01",
+        "dateTexte": epoch("2021-03-05"),
+        "numeroAffaire": ["20/01111"],
+        "decisionAttaquee": {},
+        "texte": "Arrêt de la cour d'appel de Lyon.",
+    }
+    POURVOI_SANS_CITATION = {
+        "id": "JURITEXT0102",
+        "titre": "Cour de cassation, 1re chambre civile, 12 janvier 2022, 21-99.999",
+        "juridiction": "Cour de cassation",
+        "natureJuridiction": "Cour de cassation",
+        "nature": "ARRET",
+        "solution": "Cassation",
+        "formation": "CHAMBRE_CIVILE_1",
+        "dateTexte": epoch("2022-01-12"),
+        "numeroAffaire": ["21-99.999"],
+        # Rattache l'arrêt de Lyon par la seule métadonnée : le texte ci-dessous
+        # ne mentionne ni « 20/01111 » ni aucun autre numéro de cet arrêt.
+        "decisionAttaquee": {"formation": "Cour d'appel de Lyon", "date": epoch("2021-03-05")},
+        "texte": "Statuant sur le pourvoi, la première chambre civile de la Cour de cassation casse l'arrêt attaqué.",
+    }
+
+    def base(self):
+        return {d["id"]: d for d in (self.CA_LYON, self.POURVOI_SANS_CITATION)}
+
+    def test_l_index_rattache_un_pourvoi_qui_ne_cite_aucun_numero(self):
+        historique = build_decision_history(
+            {"text_id": "JURITEXT0101"}, client=FauxClient(self.base()),
+        )
+        lien = next(l for l in historique["liens"] if l["vers"] == "JURITEXT0102")
+        self.assertEqual(lien["relation"], "pourvoi en cassation contre cette décision")
+        self.assertEqual(lien["certitude"], "certaine")
+
+    def test_la_preuve_du_lien_issu_de_l_index_porte_sa_limite(self):
+        historique = build_decision_history(
+            {"text_id": "JURITEXT0101"}, client=FauxClient(self.base()),
+        )
+        lien = next(l for l in historique["liens"] if l["vers"] == "JURITEXT0102")
+        self.assertIn("ne résout qu'au couple juridiction et date", lien["preuve"])
+
+    def test_l_index_muet_laisse_le_fil_a_un_seul_noeud_sans_echec(self):
+        base = {self.CA_LYON["id"]: self.CA_LYON}  # aucun pourvoi dans la base
+        historique = build_decision_history(
+            {"text_id": "JURITEXT0101", "max_citations": 0}, client=FauxClient(base),
+        )
+        self.assertEqual([n["id"] for n in historique["fil"]], ["JURITEXT0101"])
+        self.assertEqual(historique["liens"], [])
+        self.assertEqual(historique["telemetrie"]["echecs"], [])
+
+    def test_les_filtres_emis_portent_les_trois_facettes_sans_champ_de_recherche(self):
+        client = FauxClient(self.base())
+        historique = build_decision_history({"text_id": "JURITEXT0101"}, client=client)
+        filtres_lyon = next(
+            f for f in client.index_inverse
+            if any(g.get("facette") == "LIEU_DECISION" and g["valeurs"] == ["lyon"] for g in f)
+        )
+        facettes = {f["facette"] for f in filtres_lyon}
+        self.assertEqual(
+            facettes, {"DATE_DECISION_ATTAQUEE", "CASSATION_DECISION_ATTAQUEE", "LIEU_DECISION"},
+        )
+        # `FauxClient.search` lève une AssertionError si `query` n'est pas
+        # vide (voir sa docstring, et le test dédié ci-dessous) : aucun échec
+        # consigné dans la télémétrie le confirme pour cet appel réel.
+        self.assertEqual(historique["telemetrie"]["echecs"], [])
+
+    def test_repli_sans_valeur_de_facette_pour_un_tribunal_judiciaire(self):
+        tj = {
+            "id": "JURITEXT0201",
+            "titre": "Tribunal judiciaire de Nantes, 2 février 2021, 20/00456",
+            "juridiction": "Tribunal judiciaire de Nantes",
+            "natureJuridiction": "Tribunal judiciaire",
+            "nature": "JUGEMENT",
+            "formation": "",
+            "dateTexte": epoch("2021-02-02"),
+            "numeroAffaire": ["20/00456"],
+            "decisionAttaquee": {},
+            "texte": "Jugement du tribunal judiciaire de Nantes.",
+        }
+        client = FauxClient({tj["id"]: tj})
+        build_decision_history({"text_id": "JURITEXT0201", "max_citations": 0}, client=client)
+        self.assertEqual(len(client.index_inverse), 1)
+        facettes = {f["facette"] for f in client.index_inverse[0]}
+        self.assertNotIn("CASSATION_DECISION_ATTAQUEE", facettes)
+        self.assertIn("LIEU_DECISION", facettes)
+
+    def test_aucune_requete_d_index_si_ni_facette_ni_lieu_ni_date(self):
+        sans_lieu = {
+            "id": "JURITEXT0301",
+            "titre": "Tribunal judiciaire, 1 janvier 2021, 20/00001",
+            "juridiction": "Tribunal judiciaire",  # aucun lieu, aucune facette
+            "natureJuridiction": "Tribunal judiciaire",
+            "nature": "JUGEMENT",
+            "formation": "",
+            "dateTexte": epoch("2021-01-01"),
+            "numeroAffaire": ["20/00001"],
+            "decisionAttaquee": {},
+            "texte": "Jugement.",
+        }
+        client_sans_lieu = FauxClient({sans_lieu["id"]: sans_lieu})
+        build_decision_history({"text_id": "JURITEXT0301", "max_citations": 0}, client=client_sans_lieu)
+        self.assertEqual(client_sans_lieu.index_inverse, [])
+
+        sans_date = dict(self.CA_LYON)
+        sans_date["id"] = "JURITEXT0302"
+        sans_date["dateTexte"] = None
+        client_sans_date = FauxClient({sans_date["id"]: sans_date})
+        build_decision_history({"text_id": "JURITEXT0302", "max_citations": 0}, client=client_sans_date)
+        self.assertEqual(client_sans_date.index_inverse, [])
+
+    def test_aucune_requete_d_index_dans_le_fonds_cetat(self):
+        caa = {
+            "id": "CETATEXT0301",
+            "titre": "Cour administrative d'appel de Lyon, 1 mars 2021, 21LY00001",
+            "juridiction": "Cour administrative d'appel de Lyon",
+            "natureJuridiction": "COURS_APPEL",
+            "nature": "Texte",
+            "formation": "",
+            "dateTexte": epoch("2021-03-01"),
+            "numeroAffaire": [],
+            "num": "21LY00001",
+            "decisionAttaquee": {},
+            "texte": "Arrêt de la cour administrative d'appel de Lyon.",
+        }
+        client = FauxClient({caa["id"]: caa})
+        build_decision_history({"text_id": "CETATEXT0301", "max_citations": 0}, client=client)
+        self.assertEqual(client.index_inverse, [])
+
+    def test_la_troncature_de_l_index_est_signalee(self):
+        seed = {
+            "id": "JURITEXT0401",
+            "titre": "Cour d'appel de Metz, 1re chambre, 3 mars 2021, 20/00777",
+            "juridiction": "Cour d'appel de Metz",
+            "natureJuridiction": "Cour d'appel",
+            "nature": "ARRET",
+            "formation": "01",
+            "dateTexte": epoch("2021-03-03"),
+            "numeroAffaire": ["20/00777"],
+            "decisionAttaquee": {},
+            "texte": "Arrêt de la cour d'appel de Metz.",
+        }
+        base = {seed["id"]: seed}
+        for i in range(MAX_POURVOIS_PAR_DECISION + 5):
+            pourvoi_id = f"JURITEXT05{i:02d}"
+            base[pourvoi_id] = {
+                "id": pourvoi_id,
+                "titre": f"Cour de cassation, pourvoi {i}, 1 janvier 2022",
+                "juridiction": "Cour de cassation",
+                "natureJuridiction": "Cour de cassation",
+                "nature": "ARRET",
+                "formation": f"CHAMBRE_{i}",
+                "dateTexte": epoch("2022-01-01"),
+                "numeroAffaire": [f"21-{10000 + i}"],
+                "decisionAttaquee": {"formation": "Cour d'appel de Metz", "date": epoch("2021-03-03")},
+                "texte": "Arrêt de cassation.",
+            }
+        historique = build_decision_history(
+            {"text_id": "JURITEXT0401", "max_decisions": MAX_POURVOIS_PAR_DECISION + 10, "max_citations": 0},
+            client=FauxClient(base),
+        )
+        self.assertTrue(historique["telemetrie"]["tronque"])
+
+    def test_le_faux_client_refuse_une_requete_avec_champ_de_recherche(self):
+        # Éprouve directement le garde-fou de `FauxClient.search` (tâche A,
+        # point 2) : un champ de recherche non vide doit lever, pas être
+        # ignoré en silence.
+        with self.assertRaises(AssertionError):
+            FauxClient({}).search(fond="JURI", query="quelque chose", filtres=[])
 
 
 if __name__ == "__main__":
