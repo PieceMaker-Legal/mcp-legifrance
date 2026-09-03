@@ -29,6 +29,89 @@ def create_response(text: str, resource: Dict = None, is_error: bool = False) ->
         content.append({"type": "resource", "resource": resource})
     return {"content": content, "isError": is_error}
 
+
+def _analysis_parts(value: Any) -> list[str]:
+    """Déplie les éléments atomiques d'un champ d'analyse officiel."""
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if isinstance(value, (list, tuple)):
+        return [part for item in value for part in _analysis_parts(item)]
+    if isinstance(value, dict):
+        analysis_keys = ("resumePrincipal", "autreResume", "abstrats")
+        if any(key in value for key in analysis_keys):
+            return [
+                part
+                for key in analysis_keys
+                if key in value
+                for part in _analysis_parts(value.get(key))
+            ]
+        for key in ("texte", "text", "value", "contenu"):
+            if key in value:
+                return _analysis_parts(value[key])
+    return []
+
+
+def _analysis_text(value: Any) -> str:
+    """Assemble sans coupe les contenus uniques d'une analyse officielle."""
+    unique = []
+    seen = set()
+    for part in _analysis_parts(value):
+        if part not in seen:
+            seen.add(part)
+            unique.append(part)
+    return "\n".join(unique)
+
+
+def _format_analysis(value: str) -> str:
+    """Conserve la mise en évidence des occurrences dans le rendu Markdown."""
+    return value.replace("<mark>", "**").replace("</mark>", "**").replace("<br/>", " ").strip()
+
+
+def _search_result_analysis(result: Dict[str, Any]) -> str:
+    """Repli sur les extraits de recherche, en conservant toutes leurs valeurs."""
+    by_field = {"Abstrat": [], "Résumé principal": []}
+    principal = _analysis_text(result.get("resumePrincipal"))
+    if principal:
+        by_field["Résumé principal"].append(principal)
+    for section in result.get("sections", []) or []:
+        for extract in section.get("extracts", []) or []:
+            field_name = extract.get("searchFieldName", "")
+            if field_name in by_field:
+                value = _analysis_text(extract.get("values"))
+                if value:
+                    by_field[field_name].append(value)
+    values = by_field["Abstrat"] or by_field["Résumé principal"]
+    return _format_analysis(_analysis_text(values))
+
+
+def _complete_decision_analysis(text_id: str, search_result: Dict[str, Any]) -> tuple[str, bool]:
+    """Lit l'analyse sur la décision consultée, jamais dans un extrait tronqué."""
+    if text_id:
+        try:
+            response = legifrance_client.get_decision_text(text_id)
+            text = response.get("text", {}) if isinstance(response, dict) else {}
+            for field in ("sommaire", "resumePrincipal", "resume", "abstrat"):
+                analysis = _analysis_text(text.get(field))
+                if analysis:
+                    return _format_analysis(analysis), True
+        except Exception:
+            # La recherche reste exploitable ; le libellé du repli indique
+            # explicitement que l'aperçu de recherche n'est pas le texte complet.
+            pass
+    return _search_result_analysis(search_result), False
+
+
+def _append_decision_analysis(parts: list[str], text_id: str, result: Dict[str, Any]) -> None:
+    analysis, complete = _complete_decision_analysis(text_id, result)
+    if analysis:
+        label = "Analyse" if complete else "Aperçu d’analyse (consultation complète indisponible)"
+        parts.append(f"   {label}: {analysis}")
+        return
+    text = str(result.get("text") or "")
+    if text:
+        parts.append(f"   Extraits: {text.replace('<mark>', '**').replace('</mark>', '**')}")
+
 def handle_tracking_bodacc(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     """TOOL 4 : Vérification SIREN via BODACC"""
     siren = args.get("siren")
@@ -454,10 +537,10 @@ def handle_search_cour_cassation(args: Dict[str, Any], user_id: str) -> Dict[str
             if juri_id:
                 summary_parts.append(f"   Lien: https://www.legifrance.gouv.fr/juri/id/{juri_id}")
 
-            # Extraire l'Abstrat (analyse), résumé et articles visés depuis les sections/extracts
+            # L'analyse complète vient de la consultation de la décision. Les
+            # sections de recherche ne servent ici qu'aux articles visés.
+            _append_decision_analysis(summary_parts, juri_id, r)
             sections = r.get("sections", [])
-            abstrat_found = False
-            resume_found = False
             articles_vises = []
 
             for section in sections:
@@ -466,45 +549,11 @@ def handle_search_cour_cassation(args: Dict[str, Any], user_id: str) -> Dict[str
                     field_name = extract.get("searchFieldName", "")
                     values = extract.get("values", [])
 
-                    # Récupérer l'Abstrat (analyse juridique) - arrêts publiés
-                    if field_name == "Abstrat" and values and not abstrat_found:
-                        abstrat_text = values[0].replace("<mark>", "**").replace("</mark>", "**")
-                        # Nettoyer les [...] au début et fin
-                        abstrat_text = abstrat_text.strip()
-                        if abstrat_text.startswith("[...]"):
-                            abstrat_text = abstrat_text[5:].strip()
-                        if abstrat_text.endswith("[...]"):
-                            abstrat_text = abstrat_text[:-5].strip()
-
-                        summary_parts.append(f"   Analyse: {abstrat_text}")
-                        abstrat_found = True
-
-                    # Si pas d'Abstrat, afficher le Résumé principal (arrêts inédits)
-                    elif field_name == "Résumé principal" and values and not abstrat_found and not resume_found:
-                        resume_text = values[0].replace("<mark>", "**").replace("</mark>", "**")
-                        resume_text = resume_text.strip()
-                        if resume_text.startswith("[...]"):
-                            resume_text = resume_text[5:].strip()
-                        if resume_text.endswith("[...]"):
-                            resume_text = resume_text[:-5].strip()
-
-                        summary_parts.append(f"   Analyse: {resume_text}")
-                        resume_found = True
-
-                    # Récupérer les articles visés
-                    elif field_name == "Texte appliqué" and values:
+                    if field_name == "Texte appliqué" and values:
                         for val in values:
                             clean = val.replace("<mark>", "").replace("</mark>", "").replace("[...]", "").strip()
                             if clean and clean not in articles_vises:
                                 articles_vises.append(clean)
-
-            # Si aucune analyse trouvée (arrêt inédit), afficher les extraits du champ text
-            if not abstrat_found and not resume_found:
-                text_content = r.get("text", "")
-                if text_content:
-                    # Nettoyer les balises et garder les extraits
-                    text_clean = text_content.replace("<mark>", "**").replace("</mark>", "**")
-                    summary_parts.append(f"   Extraits: {text_clean}")
 
             # Afficher les articles visés
             if articles_vises:
@@ -630,10 +679,8 @@ def handle_search_cour_appel(args: Dict[str, Any], user_id: str) -> Dict[str, An
             if juri_id:
                 summary_parts.append(f"   Lien: https://www.legifrance.gouv.fr/juri/id/{juri_id}")
 
-            # Extraire l'Abstrat (analyse) et articles visés
+            _append_decision_analysis(summary_parts, juri_id, r)
             sections = r.get("sections", [])
-            abstrat_found = False
-            resume_found = False
             articles_vises = []
 
             for section in sections:
@@ -642,44 +689,11 @@ def handle_search_cour_appel(args: Dict[str, Any], user_id: str) -> Dict[str, An
                     field_name = extract.get("searchFieldName", "")
                     values = extract.get("values", [])
 
-                    # Récupérer l'Abstrat (analyse juridique)
-                    if field_name == "Abstrat" and values and not abstrat_found:
-                        abstrat_text = values[0].replace("<mark>", "**").replace("</mark>", "**")
-                        abstrat_text = abstrat_text.strip()
-                        if abstrat_text.startswith("[...]"):
-                            abstrat_text = abstrat_text[5:].strip()
-                        if abstrat_text.endswith("[...]"):
-                            abstrat_text = abstrat_text[:-5].strip()
-
-                        summary_parts.append(f"   Analyse: {abstrat_text}")
-                        abstrat_found = True
-
-                    # Si pas d'Abstrat, afficher le Résumé principal (arrêts inédits)
-                    elif field_name == "Résumé principal" and values and not abstrat_found and not resume_found:
-                        resume_text = values[0].replace("<mark>", "**").replace("</mark>", "**")
-                        resume_text = resume_text.strip()
-                        if resume_text.startswith("[...]"):
-                            resume_text = resume_text[5:].strip()
-                        if resume_text.endswith("[...]"):
-                            resume_text = resume_text[:-5].strip()
-
-                        summary_parts.append(f"   Analyse: {resume_text}")
-                        resume_found = True
-
-                    # Récupérer les articles visés
-                    elif field_name == "Texte appliqué" and values:
+                    if field_name == "Texte appliqué" and values:
                         for val in values:
                             clean = val.replace("<mark>", "").replace("</mark>", "").replace("[...]", "").strip()
                             if clean and clean not in articles_vises:
                                 articles_vises.append(clean)
-
-            # Si aucune analyse trouvée (arrêt inédit), afficher les extraits du champ text
-            if not abstrat_found and not resume_found:
-                text_content = r.get("text", "")
-                if text_content:
-                    # Nettoyer les balises et garder les extraits
-                    text_clean = text_content.replace("<mark>", "**").replace("</mark>", "**")
-                    summary_parts.append(f"   Extraits: {text_clean}")
 
             # Afficher les articles visés
             if articles_vises:
@@ -840,38 +854,7 @@ def handle_search_conseil_etat(args: Dict[str, Any], user_id: str) -> Dict[str, 
             if juri_id:
                 summary_parts.append(f"   Lien: {LEGIFRANCE_BASE_URL}/cetat/id/{juri_id}")
 
-            # Résumé principal si disponible
-            resume_principal = r.get("resumePrincipal", [])
-            if resume_principal:
-                resume_text = resume_principal[0] if isinstance(resume_principal, list) else resume_principal
-                resume_clean = resume_text.replace("<br/>", " ").strip()
-                summary_parts.append(f"   Analyse: {resume_clean}")
-
-            # Si pas de résumé principal, chercher dans les extraits
-            sections = r.get("sections", [])
-            abstrat_found = False
-            resume_found = bool(resume_principal)
-
-            for section in sections:
-                extracts = section.get("extracts", [])
-                for extract in extracts:
-                    field_name = extract.get("searchFieldName", "")
-                    values = extract.get("values", [])
-
-                    if field_name == "Abstrat" and values and not abstrat_found:
-                        abstrat_text = values[0].replace("[...]", "").strip()
-                        abstrat_clean = abstrat_text.replace("<mark>", "**").replace("</mark>", "**")
-                        if not resume_found:
-                            summary_parts.append(f"   Analyse: {abstrat_clean}")
-                        abstrat_found = True
-                        break
-
-            # Si aucune analyse trouvée (décision inédite), afficher les extraits du champ text
-            if not abstrat_found and not resume_found:
-                text_content = r.get("text", "")
-                if text_content:
-                    text_clean = text_content.replace("<mark>", "**").replace("</mark>", "**")
-                    summary_parts.append(f"   Extraits: {text_clean}")
+            _append_decision_analysis(summary_parts, juri_id, r)
 
             summary_parts.append("")
 
@@ -1049,38 +1032,7 @@ def handle_search_caa(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
             if juri_id:
                 summary_parts.append(f"   Lien: {LEGIFRANCE_BASE_URL}/cetat/id/{juri_id}")
 
-            # Résumé principal si disponible
-            resume_principal = r.get("resumePrincipal", [])
-            if resume_principal:
-                resume_text = resume_principal[0] if isinstance(resume_principal, list) else resume_principal
-                resume_clean = resume_text.replace("<br/>", " ").strip()
-                summary_parts.append(f"   Analyse: {resume_clean}")
-
-            # Si pas de résumé principal, chercher dans les extraits
-            sections = r.get("sections", [])
-            abstrat_found = False
-            resume_found = bool(resume_principal)
-
-            for section in sections:
-                extracts = section.get("extracts", [])
-                for extract in extracts:
-                    field_name = extract.get("searchFieldName", "")
-                    values = extract.get("values", [])
-
-                    if field_name == "Abstrat" and values and not abstrat_found:
-                        abstrat_text = values[0].replace("[...]", "").strip()
-                        abstrat_clean = abstrat_text.replace("<mark>", "**").replace("</mark>", "**")
-                        if not resume_found:
-                            summary_parts.append(f"   Analyse: {abstrat_clean}")
-                        abstrat_found = True
-                        break
-
-            # Si aucune analyse trouvée (décision inédite), afficher les extraits du champ text
-            if not abstrat_found and not resume_found:
-                text_content = r.get("text", "")
-                if text_content:
-                    text_clean = text_content.replace("<mark>", "**").replace("</mark>", "**")
-                    summary_parts.append(f"   Extraits: {text_clean}")
+            _append_decision_analysis(summary_parts, juri_id, r)
 
             summary_parts.append("")
 
@@ -1342,10 +1294,8 @@ def handle_search_premiere_instance(args: Dict[str, Any], user_id: str) -> Dict[
             if juri_id:
                 summary_parts.append(f"   Lien: https://www.legifrance.gouv.fr/juri/id/{juri_id}")
 
-            # Extraire l'Abstrat (analyse) et articles visés
+            _append_decision_analysis(summary_parts, juri_id, r)
             sections = r.get("sections", [])
-            abstrat_found = False
-            resume_found = False
             articles_vises = []
 
             for section in sections:
@@ -1354,44 +1304,11 @@ def handle_search_premiere_instance(args: Dict[str, Any], user_id: str) -> Dict[
                     field_name = extract.get("searchFieldName", "")
                     values = extract.get("values", [])
 
-                    # Récupérer l'Abstrat (analyse juridique)
-                    if field_name == "Abstrat" and values and not abstrat_found:
-                        abstrat_text = values[0].replace("<mark>", "**").replace("</mark>", "**")
-                        abstrat_text = abstrat_text.strip()
-                        if abstrat_text.startswith("[...]"):
-                            abstrat_text = abstrat_text[5:].strip()
-                        if abstrat_text.endswith("[...]"):
-                            abstrat_text = abstrat_text[:-5].strip()
-
-                        summary_parts.append(f"   Analyse: {abstrat_text}")
-                        abstrat_found = True
-
-                    # Si pas d'Abstrat, afficher le Résumé principal (arrêts inédits)
-                    elif field_name == "Résumé principal" and values and not abstrat_found and not resume_found:
-                        resume_text = values[0].replace("<mark>", "**").replace("</mark>", "**")
-                        resume_text = resume_text.strip()
-                        if resume_text.startswith("[...]"):
-                            resume_text = resume_text[5:].strip()
-                        if resume_text.endswith("[...]"):
-                            resume_text = resume_text[:-5].strip()
-
-                        summary_parts.append(f"   Analyse: {resume_text}")
-                        resume_found = True
-
-                    # Récupérer les articles visés
-                    elif field_name == "Texte appliqué" and values:
+                    if field_name == "Texte appliqué" and values:
                         for val in values:
                             clean = val.replace("<mark>", "").replace("</mark>", "").replace("[...]", "").strip()
                             if clean and clean not in articles_vises:
                                 articles_vises.append(clean)
-
-            # Si aucune analyse trouvée (arrêt inédit), afficher les extraits du champ text
-            if not abstrat_found and not resume_found:
-                text_content = r.get("text", "")
-                if text_content:
-                    # Nettoyer les balises et garder les extraits
-                    text_clean = text_content.replace("<mark>", "**").replace("</mark>", "**")
-                    summary_parts.append(f"   Extraits: {text_clean}")
 
             # Afficher les articles visés
             if articles_vises:

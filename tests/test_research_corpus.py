@@ -48,6 +48,16 @@ class FakeLegifranceClient:
         }}
 
 
+class MultiSummaryClient(FakeLegifranceClient):
+    def get_decision_text(self, text_id):
+        response = super().get_decision_text(text_id)
+        response["text"]["sommaire"] = [{
+            "resumePrincipal": "Analyse première.",
+            "abstrats": ["Analyse première.", "Analyse seconde.", "Analyse seconde."],
+        }]
+        return response
+
+
 class GenericLawClient:
     def __init__(self, text_id, body):
         self.text_id = text_id
@@ -125,6 +135,21 @@ class ResearchCorpusTest(unittest.TestCase):
         with open(info["telemetry"], encoding="utf-8") as handle:
             telemetry = json.load(handle)
         self.assertEqual(telemetry["total_resultats_cumules_avant_deduplication"], 2)
+
+    def test_index_contient_l_analyse_officielle_complete(self):
+        info = build_research_corpus({
+            "question": "Conditions de révocation",
+            "query": "premiere révocation",
+            "juridictions": ["cassation"],
+            "output_dir": self.temp.name,
+            "fetch_workers": 1,
+        }, client=MultiSummaryClient())
+
+        with open(info["index"], encoding="utf-8") as handle:
+            index = handle.read()
+        self.assertIn("Analyse officielle complète", index)
+        self.assertIn("Analyse première.<br>Analyse seconde.", index)
+        self.assertEqual(index.count("Analyse première."), 2)
 
     def test_rejette_l_ancien_tableau_queries(self):
         with self.assertRaisesRegex(ValueError, "`queries` n'est plus accepté"):

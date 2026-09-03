@@ -288,12 +288,51 @@ def _first_text(*values: Any) -> str:
     return ""
 
 
+def _all_text_parts(value: Any) -> List[str]:
+    """Déplie les éléments atomiques d'un sommaire/analyse officiel."""
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if isinstance(value, (list, tuple)):
+        return [part for item in value for part in _all_text_parts(item)]
+    if isinstance(value, dict):
+        analysis_keys = ("resumePrincipal", "autreResume", "abstrats")
+        if any(key in value for key in analysis_keys):
+            return [
+                part
+                for key in analysis_keys
+                if key in value
+                for part in _all_text_parts(value.get(key))
+            ]
+        for key in ("texte", "text", "value", "contenu"):
+            if key in value:
+                return _all_text_parts(value[key])
+    return []
+
+
+def _all_text(value: Any) -> str:
+    """Conserve les contenus uniques, dans leur ordre officiel."""
+    unique = []
+    seen = set()
+    for part in _all_text_parts(value):
+        if part not in seen:
+            seen.add(part)
+            unique.append(part)
+    return "\n".join(unique)
+
+
 def _decision_record(seed: Dict[str, Any], response: Dict[str, Any]) -> Dict[str, Any]:
     text = (response or {}).get("text") or {}
     body = str(text.get("texte") or "").strip()
     number = _first_text(text.get("numeroAffaire"), text.get("num"), text.get("numeroPublicationBulletin"))
     publication = _first_text(text.get("typePublicationBulletin"), text.get("publicationRecueil"))
-    summary = _first_text(text.get("sommaire"), text.get("resume"), seed.get("analyse"))
+    summary = (
+        _all_text(text.get("sommaire"))
+        or _all_text(text.get("resumePrincipal"))
+        or _all_text(text.get("resume"))
+        or _all_text(text.get("abstrat"))
+        or _all_text(seed.get("analyse"))
+    )
     title = _first_text(text.get("titre"), text.get("titreLong"), seed.get("titre"), seed.get("id"))
     source_base = JURIDICTION_CONFIG[seed["juridiction_source"]]["link_base"]
 
@@ -698,15 +737,16 @@ def build_research_corpus(args: Dict[str, Any], client: Any = None) -> Dict[str,
         f"- **Lots de cartographie** : {len(batches)}",
         "- **Classement** : lexical, pour contrôle humain uniquement ; il ne modifie jamais les lots.",
         "",
-        "| Rang contrôle | Score | Décision | Date | Solution | Fichier |",
-        "| ---: | ---: | --- | --- | --- | --- |",
+        "| Rang contrôle | Score | Décision | Date | Solution | Analyse officielle complète | Fichier |",
+        "| ---: | ---: | --- | --- | --- | --- | --- |",
     ]
     for rank, record in enumerate(ranked, 1):
         title = str(record["titre"]).replace("|", "\\|")
         solution = str(record.get("solution") or "").replace("|", "\\|")
+        analysis = str(record.get("sommaire") or "_Absente._").replace("|", "\\|").replace("\n", "<br>")
         index_lines.append(
             f"| {rank} | {record['score_lexical']} | {title} | {record.get('date', '')} | "
-            f"{solution} | [{record['id']}]({record['fichier']}) |"
+            f"{solution} | {analysis} | [{record['id']}]({record['fichier']}) |"
         )
     with open(os.path.join(folder, "index.md"), "w", encoding="utf-8") as handle:
         handle.write("\n".join(index_lines) + "\n")
