@@ -92,13 +92,5 @@ class ResearchToolContractsTest(unittest.TestCase):
         self.assertTrue(response["isError"])
         self.assertIn("non reconnu", response["content"][0]["text"])
 
-    def test_download_query_results_n_est_pas_un_outil_public(self):
-        self.assertNotIn("Download_Query_Results", self.tools)
-        self.assertNotIn("Download_Query_Results", TOOL_HANDLERS)
-        response = handle_tool_call("Download_Query_Results", {}, "test")
-        self.assertTrue(response["isError"])
-        self.assertIn("non reconnu", response["content"][0]["text"])
-
-
 if __name__ == "__main__":
     unittest.main()

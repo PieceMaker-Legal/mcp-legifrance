@@ -24,7 +24,6 @@ import time
 import unicodedata
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from tools.bulk_download import JURIDICTION_CONFIG, MARKER_NAME, slugify
 from tools.legifrance_client import legifrance_client
 from tools.query_parser import parse_query
 from tools import research_report_compiler
@@ -40,6 +39,40 @@ DEFAULT_FETCH_WORKERS = 4
 HARD_FETCH_WORKERS = 8
 
 TOKEN_ESTIMATION_METHOD = "ceil(nombre_de_caracteres_utf8_decodes/4)"
+
+# Contrat de fichier public et stable pour les clients externes.
+MARKER_NAME = ".legifrance-results.json"
+
+# Corpus supportés : (fond, filtres de juridiction, base de lien Légifrance).
+JURIDICTION_CONFIG = {
+    "cassation": {
+        "fond": "JURI",
+        "filtres": [{"facette": "JURIDICTION_JUDICIAIRE", "valeurs": ["Cour de cassation"]}],
+        "link_base": "https://www.legifrance.gouv.fr/juri/id/",
+    },
+    "appel": {
+        "fond": "JURI",
+        "filtres": [{"facette": "JURIDICTION_JUDICIAIRE", "valeurs": ["Juridictions d'appel"]}],
+        "link_base": "https://www.legifrance.gouv.fr/juri/id/",
+    },
+    "premiere_instance": {
+        "fond": "JURI",
+        "filtres": [{"facette": "JURIDICTION_JUDICIAIRE", "valeurs": ["Juridictions du premier degré"]}],
+        "link_base": "https://www.legifrance.gouv.fr/juri/id/",
+    },
+    "administratif": {  # Conseil d'État + cours administratives d'appel
+        "fond": "CETAT",
+        "filtres": [],
+        "link_base": "https://www.legifrance.gouv.fr/ceta/id/",
+    },
+}
+
+
+def slugify(value: Any, max_length: int = 50) -> str:
+    """Produit un nom de fichier ASCII stable à partir d'un libellé."""
+    text = unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode("ascii")
+    text = re.sub(r"[^a-zA-Z0-9]+", "-", text).strip("-").lower()
+    return (text[:max_length].strip("-")) or "resultat"
 
 STOPWORDS = {
     "alors", "avec", "cette", "dans", "depuis", "des", "dont", "elle",
