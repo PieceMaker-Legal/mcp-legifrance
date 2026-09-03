@@ -24,7 +24,6 @@ PUBLIC_QUERY_TOOLS = {
     "Search_CAA": "query",
     "Search_Premiere_Instance": "query",
     "Search_Code": "query",
-    "Download_Query_Results": "query",
     "Build_Research_Corpus": "query",
 }
 
@@ -59,7 +58,6 @@ class ResearchToolContractsTest(unittest.TestCase):
             "Search_Cour_Appel",
             "Search_Conseil_Etat",
             "Search_CAA",
-            "Download_Query_Results",
         ):
             self.assertEqual(
                 self.tools[name]["inputSchema"]["properties"]["query"]["description"],
@@ -91,6 +89,13 @@ class ResearchToolContractsTest(unittest.TestCase):
     def test_alias_recherche_jurisprudence_n_est_plus_routable(self):
         self.assertNotIn("recherche_jurisprudence", TOOL_HANDLERS)
         response = handle_tool_call("recherche_jurisprudence", {}, "test")
+        self.assertTrue(response["isError"])
+        self.assertIn("non reconnu", response["content"][0]["text"])
+
+    def test_download_query_results_n_est_pas_un_outil_public(self):
+        self.assertNotIn("Download_Query_Results", self.tools)
+        self.assertNotIn("Download_Query_Results", TOOL_HANDLERS)
+        response = handle_tool_call("Download_Query_Results", {}, "test")
         self.assertTrue(response["isError"])
         self.assertIn("non reconnu", response["content"][0]["text"])
 

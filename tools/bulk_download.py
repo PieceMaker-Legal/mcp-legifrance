@@ -3,12 +3,8 @@
 """
 Téléchargement en masse des résultats d'une requête Legifrance.
 
-L'outil MCP `Download_Query_Results` pagine une requête jusqu'à récupérer tous
-ses résultats (dans la limite d'un plafond), les écrit dans un dossier — un
-fichier Markdown par décision, plus un index et le JSON brut — et rend le
-CHEMIN du dossier au client appelant. Un agent bon marché peut ensuite lire ce
-dossier au lieu de paginer lui-même. Le marqueur `.legifrance-results.json`
-permet à tout client de reconnaître les résultats sans couplage à ce serveur.
+Ce module interne conserve les utilitaires de pagination, de rendu et de
+nommage utilisés par le pipeline de corpus. Il n'est pas exposé comme outil MCP.
 """
 
 import json

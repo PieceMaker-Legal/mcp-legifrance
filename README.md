@@ -57,8 +57,8 @@ Le serveur fournit également un dictionnaire juridique.
 ## Syntaxe des recherches
 
 Les outils `Search_Cour_Cassation`, `Search_Cour_Appel`,
-`Search_Conseil_Etat`, `Search_CAA`, `Search_Code`,
-`Download_Query_Results` et `Build_Research_Corpus` partagent la même syntaxe :
+`Search_Conseil_Etat`, `Search_CAA`, `Search_Code`
+et `Build_Research_Corpus` partagent la même syntaxe :
 
 - les guillemets délimitent une expression exacte : `"faute grave"` ;
 - `ET` exige les deux côtés et est prioritaire sur `OU` ;

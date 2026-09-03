@@ -426,48 +426,6 @@ Chaque famille est etendue aux valeurs reelles de la facette officielle PREMIER_
         }
     },
     {
-        "name": "Download_Query_Results",
-        "description": "Télécharge TOUS les résultats d'une requête de jurisprudence (dans la limite d'un plafond) dans un dossier local — un fichier Markdown par décision, plus un index et le JSON brut — et rend le CHEMIN du dossier. À utiliser pour le tri en masse : l'agent lit ensuite l'index puis les décisions pertinentes au lieu de paginer. Un marqueur local stable permet au client de tracer les lectures s'il le souhaite.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": QUERY_DESCRIPTION
-                },
-                "juridiction": {
-                    "type": "string",
-                    "enum": ["cassation", "appel", "premiere_instance", "administratif"],
-                    "description": "Corpus à interroger. 'administratif' couvre Conseil d'État et cours administratives d'appel.",
-                    "default": "cassation"
-                },
-                "date_debut": {
-                    "type": "string",
-                    "description": "Date de début (AAAA-MM-JJ). Défaut : il y a 5 ans."
-                },
-                "date_fin": {
-                    "type": "string",
-                    "description": "Date de fin (AAAA-MM-JJ). Défaut : aujourd'hui."
-                },
-                "max_results": {
-                    "type": "integer",
-                    "description": "Plafond de décisions téléchargées (défaut 200, maximum 500).",
-                    "default": 200
-                },
-                "include_solution": {
-                    "type": "boolean",
-                    "description": "Si vrai, enrichit chaque décision (plafond 50) avec sa SOLUTION/dispositif seul — sens (rejet/cassation), décision attaquée, extrait du dispositif — SANS les motifs. Un appel API par décision : à réserver à une liste déjà restreinte (max_results bas). Défaut : faux.",
-                    "default": False
-                },
-                "output_dir": {
-                    "type": "string",
-                    "description": "Dossier racine où créer le sous-dossier de résultats. Défaut autonome : ~/.legifrance-mcp/results/."
-                }
-            },
-            "required": ["query"]
-        }
-    },
-    {
         "name": "Build_Research_Corpus",
         "description": (
             "Constitue un corpus jurisprudentiel à partir d'une question de droit et d'une seule "
