@@ -21,6 +21,7 @@ from tools.decision_history import (
     build_decision_history,
     render_markdown as render_historique,
 )
+from config.mcp_definitions import INITIALIZE_INSTRUCTIONS
 LEGIFRANCE_BASE_URL = "https://www.legifrance.gouv.fr"
 
 def create_response(text: str, resource: Dict = None, is_error: bool = False) -> Dict[str, Any]:
@@ -29,6 +30,62 @@ def create_response(text: str, resource: Dict = None, is_error: bool = False) ->
     if resource:
         content.append({"type": "resource", "resource": resource})
     return {"content": content, "isError": is_error}
+
+
+# Contrat de recherche énoncé par INITIALIZE_INSTRUCTIONS : au-delà de ce
+# nombre de résultats, la recherche est refusée pour manque de contexte.
+LIMITE_RESULTATS = 500
+
+
+def _refus_requete_trop_large(total: int) -> Dict[str, Any]:
+    """Refuse une recherche dont le total dépasse le contrat des 500 résultats."""
+    return create_response(
+        f"<tool-use-error>\n"
+        f"Requête trop large : {total} résultats trouvés (maximum {LIMITE_RESULTATS}).\n"
+        f"La recherche est refusée pour manque de contexte : reformule-la en appliquant "
+        f"les instructions de recherche.\n"
+        f"\n"
+        f"{INITIALIZE_INSTRUCTIONS}\n"
+        f"</tool-use-error>",
+        is_error=True,
+    )
+
+
+def _borne_pagination(args: Dict[str, Any], page_size_defaut: int, page_size_max: int):
+    """
+    Coerce et borne `page_size`/`page_number` d'après les défauts et maxima du
+    schéma. Ne lève jamais : une valeur absente, `None` ou non convertible
+    retombe sur le défaut du schéma. Rend `(page_size, page_number, refus)`
+    où `refus` est `None` ou une réponse d'erreur quand la page demandée
+    commence au-delà du contrat des 500 résultats.
+    """
+    def _coerce_int(value, default):
+        if value is None:
+            return default
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    page_size = _coerce_int(args.get("page_size"), page_size_defaut)
+    page_number = _coerce_int(args.get("page_number"), 1)
+
+    page_size = max(1, min(page_size, page_size_max))
+    page_number = max(1, page_number)
+
+    if (page_number - 1) * page_size >= LIMITE_RESULTATS:
+        refus = create_response(
+            f"<tool-use-error>\n"
+            f"Page hors contrat : la page {page_number} de {page_size} résultats commence "
+            f"au-delà du {LIMITE_RESULTATS}e résultat.\n"
+            f"Une recherche acceptée rend au plus {LIMITE_RESULTATS} résultats : demande une "
+            f"page comprise dans cette limite ou resserre la requête.\n"
+            f"</tool-use-error>",
+            is_error=True,
+        )
+        return page_size, page_number, refus
+
+    return page_size, page_number, None
 
 
 def _analysis_parts(value: Any) -> list[str]:
@@ -456,8 +513,9 @@ def handle_search_cour_cassation(args: Dict[str, Any], user_id: str) -> Dict[str
 
     # Pagination et tri
     sort = "PERTINENCE"  # Fixé sur PERTINENCE
-    page_size = args.get("page_size", 10)
-    page_number = args.get("page_number", 1)
+    page_size, page_number, refus_pagination = _borne_pagination(args, 10, 100)
+    if refus_pagination is not None:
+        return refus_pagination
 
     # Construction des filtres
     filtres = [
@@ -515,17 +573,8 @@ def handle_search_cour_cassation(args: Dict[str, Any], user_id: str) -> Dict[str
         resultats = result.get("results", [])
 
         # Vérifier si la requête est trop large (> 500 résultats)
-        if total > 500:
-            return create_response(
-                f"<tool-use-error>\n"
-                f"Requête trop large: {total} résultats trouvés (max 500).\n\n"
-                f"Affinez avec:\n"
-                f"- Mots-clés plus spécifiques ou opérateurs (ET, OU, \"exacte\")\n"
-                f"- Article ciblé (ex: \"L. 1235-3\")\n\n"
-                f"Note: Réduire la période seule ne garantit pas la pertinence.\n"
-                f"</tool-use-error>",
-                is_error=True
-            )
+        if total > LIMITE_RESULTATS:
+            return _refus_requete_trop_large(total)
 
         matiere_str = ", ".join(matieres)
 
@@ -622,8 +671,9 @@ def handle_search_cour_appel(args: Dict[str, Any], user_id: str) -> Dict[str, An
     date_fin = borne_haute_reelle(date_fin)
 
     sort = args.get("sort", "DATE_DESC")
-    page_size = args.get("page_size", 15)
-    page_number = args.get("page_number", 1)
+    page_size, page_number, refus_pagination = _borne_pagination(args, 15, 100)
+    if refus_pagination is not None:
+        return refus_pagination
 
     # Construction des filtres
     filtres = [
@@ -664,17 +714,8 @@ def handle_search_cour_appel(args: Dict[str, Any], user_id: str) -> Dict[str, An
         resultats = result.get("results", [])
 
         # Vérifier si la requête est trop large (> 500 résultats)
-        if total > 500:
-            return create_response(
-                f"<tool-use-error>\n"
-                f"Requête trop large: {total} résultats trouvés (max 500).\n\n"
-                f"Affinez avec:\n"
-                f"- Mots-clés plus spécifiques ou opérateurs (ET, OU, \"exacte\")\n"
-                f"- Article ciblé (ex: \"L. 1235-3\")\n\n"
-                f"Note: Réduire la période seule ne garantit pas la pertinence.\n"
-                f"</tool-use-error>",
-                is_error=True
-            )
+        if total > LIMITE_RESULTATS:
+            return _refus_requete_trop_large(total)
 
         sieges_str = ", ".join(sieges) if sieges else "TOUTES"
 
@@ -763,8 +804,9 @@ def handle_search_conseil_etat(args: Dict[str, Any], user_id: str) -> Dict[str, 
 
     # Pagination et tri
     sort = "PERTINENCE"
-    page_size = max(1, min(int(args.get("page_size", 10)), 100))
-    page_number = max(1, int(args.get("page_number", 1)))
+    page_size, page_number, refus_pagination = _borne_pagination(args, 10, 100)
+    if refus_pagination is not None:
+        return refus_pagination
 
     # Construction des filtres
     filtres = [
@@ -774,6 +816,16 @@ def handle_search_conseil_etat(args: Dict[str, Any], user_id: str) -> Dict[str, 
                 "start": date_debut,
                 "end": date_fin
             }
+        },
+        # JURIDICTION_NATURE est une facette hiérarchique du fonds CETAT : la
+        # forme plate {"facette": "JURIDICTION_NATURE", "valeurs": [...]}
+        # rend HTTP 500, il faut impérativement la clé multiValeurs (mesure
+        # du 2026-09-02, voir docs/facettes-officielles-dila.md). Une liste
+        # fille vide sélectionne tout le parent CONSEIL_ETAT.
+        {
+            "facette": "JURIDICTION_NATURE",
+            "valeurs": ["CONSEIL_ETAT"],
+            "multiValeurs": {"CONSEIL_ETAT": []}
         }
     ]
 
@@ -787,76 +839,38 @@ def handle_search_conseil_etat(args: Dict[str, Any], user_id: str) -> Dict[str, 
         })
 
     try:
-        # Le fonds CETAT mélange plusieurs juridictions. Le filtre Conseil
-        # d'État est donc appliqué après avoir parcouru toutes ses pages,
-        # jusqu'à un plafond explicite et signalé.
-        scan_limit = 500
-        scan_page_size = 100
-        scan_page = 1
-        resultats_bruts = []
-        total_cetat = None
-        while len(resultats_bruts) < scan_limit:
-            requested_page_size = min(scan_page_size, scan_limit - len(resultats_bruts))
-            result = legifrance_client.search_with_criteres(
-                fond="CETAT",
-                criteres=criteres_parsed,
-                operateur=operateur_query,
-                filtres=filtres,
-                type_champ=type_champ,
-                page_number=scan_page,
-                page_size=requested_page_size,
-                sort=sort
-            )
-            batch = result.get("results", []) or []
-            reported_total = result.get("totalResultNumber")
-            try:
-                parsed_total = int(reported_total) if reported_total is not None else None
-            except (TypeError, ValueError):
-                parsed_total = None
-            if parsed_total and parsed_total > 0:
-                total_cetat = parsed_total
-            if not batch:
-                break
-            resultats_bruts.extend(batch)
-            if len(batch) < requested_page_size:
-                break
-            if total_cetat is not None and len(resultats_bruts) >= total_cetat:
-                break
-            scan_page += 1
-
-        limite_atteinte = (
-            len(resultats_bruts) >= scan_limit
-            and (total_cetat is None or len(resultats_bruts) < total_cetat)
+        result = legifrance_client.search_with_criteres(
+            fond="CETAT",
+            criteres=criteres_parsed,
+            operateur=operateur_query,
+            filtres=filtres,
+            type_champ=type_champ,
+            page_number=page_number,
+            page_size=page_size,
+            sort=sort
         )
-        resultats_filtres = []
-        for r in resultats_bruts:
-            titre = r.get("titles", [{}])[0].get("title", "")
-            if "Conseil d'État" in titre or "CE" in titre[:10]:
-                resultats_filtres.append(r)
+        resultats = result.get("results", []) or []
+        reported_total = result.get("totalResultNumber")
+        try:
+            total = int(reported_total) if reported_total is not None else None
+        except (TypeError, ValueError):
+            total = None
 
-        total_filtre = len(resultats_filtres)
-        page_start = (page_number - 1) * page_size
-        resultats = resultats_filtres[page_start:page_start + page_size]
+        if total is not None and total > LIMITE_RESULTATS:
+            return _refus_requete_trop_large(total)
 
         summary_parts = [
             f"**⚖️ CONSEIL D'ÉTAT**",
             f"",
             f"**Requête:** {query}",
             f"**Période:** {date_debut} → {date_fin}",
-            f"**CETAT parcouru avant filtre:** {len(resultats_bruts)} décisions",
-            f"**Conseil d'État filtré:** {total_filtre} décisions",
             f"**Page:** {page_number} — {len(resultats)} décision(s) affichée(s)",
             f""
         ]
 
-        if total_cetat is not None:
+        if total is not None:
             summary_parts.append(
-                f"**Total CETAT signalé par l'API:** {total_cetat:,} décisions".replace(',', ' ')
-            )
-        if limite_atteinte:
-            summary_parts.append(
-                f"⚠️ **Limite de parcours CETAT atteinte:** {scan_limit} décisions. "
-                "Les résultats filtrés et leur total sont partiels ; affinez la requête."
+                f"**Total rendu par l'API:** {total:,} décisions".replace(',', ' ')
             )
 
         if publication != "TOUS":
@@ -922,8 +936,9 @@ def handle_search_caa(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
 
     # Pagination et tri
     sort = "PERTINENCE"
-    page_size = max(1, min(int(args.get("page_size", 15)), 100))
-    page_number = max(1, int(args.get("page_number", 1)))
+    page_size, page_number, refus_pagination = _borne_pagination(args, 15, 100)
+    if refus_pagination is not None:
+        return refus_pagination
 
     # Construction des filtres
     filtres = [
@@ -960,21 +975,6 @@ def handle_search_caa(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
         "multiValeurs": {"COURS_APPEL": list(villes)}
     })
 
-    # L'API borne pageNumber × pageSize à 10 000, au-delà elle répond par une
-    # erreur 500 opaque. On le vérifie avant l'appel pour rendre un message clair.
-    if page_number * page_size > 10000:
-        return create_response(
-            f"<tool-use-error>\n"
-            f"Erreur recherche CAA\n"
-            f"Requête: {query}\n"
-            f"Erreur: page_number × page_size ({page_number} × {page_size} = "
-            f"{page_number * page_size}) dépasse la limite de 10 000 imposée par "
-            f"l'API Légifrance sur la profondeur de parcours. Resserrez la requête, "
-            f"réduisez la période ou choisissez une page moins profonde.\n"
-            f"</tool-use-error>",
-            is_error=True
-        )
-
     try:
         result = legifrance_client.search_with_criteres(
             fond="CETAT",
@@ -992,6 +992,9 @@ def handle_search_caa(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
             total_api = int(reported_total) if reported_total is not None else None
         except (TypeError, ValueError):
             total_api = None
+
+        if total_api is not None and total_api > LIMITE_RESULTATS:
+            return _refus_requete_trop_large(total_api)
 
         villes_str = ", ".join(villes) if villes else "TOUTES"
 
@@ -1171,8 +1174,9 @@ def handle_search_premiere_instance(args: Dict[str, Any], user_id: str) -> Dict[
     date_fin = borne_haute_reelle(date_fin)
 
     sort = args.get("sort", "DATE_DESC")
-    page_size = args.get("page_size", 20)
-    page_number = args.get("page_number", 1)
+    page_size, page_number, refus_pagination = _borne_pagination(args, 20, 100)
+    if refus_pagination is not None:
+        return refus_pagination
 
     # Construction des filtres
     filtres = [
@@ -1252,17 +1256,8 @@ def handle_search_premiere_instance(args: Dict[str, Any], user_id: str) -> Dict[
         resultats = result.get("results", [])
 
         # Vérifier si la requête est trop large (> 500 résultats)
-        if total > 500:
-            return create_response(
-                f"<tool-use-error>\n"
-                f"Requête trop large: {total} résultats trouvés (max 500).\n\n"
-                f"Affinez avec:\n"
-                f"- Mots-clés plus spécifiques ou opérateurs (ET, OU, \"exacte\")\n"
-                f"- Article ciblé (ex: \"L. 1235-3\")\n\n"
-                f"Note: Réduire la période seule ne garantit pas la pertinence.\n"
-                f"</tool-use-error>",
-                is_error=True
-            )
+        if total > LIMITE_RESULTATS:
+            return _refus_requete_trop_large(total)
 
         types_str = ", ".join(familles)
 
@@ -1356,8 +1351,9 @@ def handle_search_code(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
 
     # Pagination et tri
     sort = args.get("sort", "PERTINENCE")
-    page_size = args.get("page_size", 10)
-    page_number = args.get("page_number", 1)
+    page_size, page_number, refus_pagination = _borne_pagination(args, 10, 50)
+    if refus_pagination is not None:
+        return refus_pagination
 
     filtres = [{
         "facette": "DATE_VERSION",
@@ -1381,6 +1377,9 @@ def handle_search_code(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
         # Construction du résumé
         total = result.get("totalResultNumber", 0)
         resultats = result.get("results", [])
+
+        if total > LIMITE_RESULTATS:
+            return _refus_requete_trop_large(total)
 
         summary_parts = [
             f"**Requête:** {query}",
