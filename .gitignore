@@ -9,4 +9,11 @@ logs/
 .bootstrap.lock/
 AGENTS.md
 CLAUDE.md
+agents.md
+claude.md
+/docs/
+/tests/
 diagnostic_legifrance_local.py
+.piecemaker/case-folder-structure.json
+.piecemaker/protection.json
+Fichiers convertis PieceMaker/mapping_default.json
