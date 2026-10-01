@@ -71,7 +71,7 @@ def handle_initialize(params):
             "tools": {"enabled": True, "list": True, "call": True},
             "resources": {"enabled": True, "list": True, "read": True}
         },
-        "serverInfo": {"name": "Légifrance MCP", "version": "2.0.0"},
+        "serverInfo": {"name": "Légifrance MCP", "version": "2.1.0"},
         "instructions": INITIALIZE_INSTRUCTIONS,
     }
 

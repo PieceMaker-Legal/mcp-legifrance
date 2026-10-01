@@ -24,13 +24,12 @@ import time
 import unicodedata
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from tools.legifrance_client import legifrance_client, est_date_absente, borne_haute_reelle
-from tools.query_parser import parse_query
+from tools import jurisprudence_search as recherche
+from tools.legifrance_client import legifrance_client, est_date_absente
 from tools import research_report_compiler
 
 
-PAGE_SIZE = 100
-MAX_CUMULATIVE_RESULTS = 500
+MAX_CUMULATIVE_RESULTS = recherche.LIMITE_RESULTATS
 DEFAULT_BATCH_TARGET_TOKENS = 60_000
 HARD_BATCH_TARGET_TOKENS = 150_000
 DEFAULT_BATCH_MAX_DECISIONS = 1
@@ -42,31 +41,6 @@ TOKEN_ESTIMATION_METHOD = "ceil(nombre_de_caracteres_utf8_decodes/4)"
 
 # Contrat de fichier public et stable pour les clients externes.
 MARKER_NAME = ".legifrance-results.json"
-
-# Corpus supportés : (fond, filtres de juridiction, base de lien Légifrance).
-JURIDICTION_CONFIG = {
-    "cassation": {
-        "fond": "JURI",
-        "filtres": [{"facette": "JURIDICTION_JUDICIAIRE", "valeurs": ["Cour de cassation"]}],
-        "link_base": "https://www.legifrance.gouv.fr/juri/id/",
-    },
-    "appel": {
-        "fond": "JURI",
-        "filtres": [{"facette": "JURIDICTION_JUDICIAIRE", "valeurs": ["Juridictions d'appel"]}],
-        "link_base": "https://www.legifrance.gouv.fr/juri/id/",
-    },
-    "premiere_instance": {
-        "fond": "JURI",
-        "filtres": [{"facette": "JURIDICTION_JUDICIAIRE", "valeurs": ["Juridictions du premier degré"]}],
-        "link_base": "https://www.legifrance.gouv.fr/juri/id/",
-    },
-    "administratif": {  # Conseil d'État + cours administratives d'appel
-        "fond": "CETAT",
-        "filtres": [],
-        "link_base": "https://www.legifrance.gouv.fr/ceta/id/",
-    },
-}
-
 
 def slugify(value: Any, max_length: int = 50) -> str:
     """Produit un nom de fichier ASCII stable à partir d'un libellé."""
@@ -120,151 +94,21 @@ def _clean_query(args: Dict[str, Any]) -> str:
     return query
 
 
-def _clean_jurisdictions(raw: Any) -> List[str]:
-    if isinstance(raw, str):
-        raw = [raw]
-    values = raw if isinstance(raw, list) and raw else ["cassation"]
-    jurisdictions = []
-    for value in values:
-        key = str(value or "").strip().lower()
-        if key not in JURIDICTION_CONFIG:
-            raise ValueError(
-                f"juridiction inconnue : {key}. "
-                f"Valeurs : {', '.join(sorted(JURIDICTION_CONFIG))}"
-            )
-        if key not in jurisdictions:
-            jurisdictions.append(key)
-    return jurisdictions
-
-
-def _search_identity(result: Dict[str, Any]) -> Tuple[str, str]:
-    titles = result.get("titles") or []
-    first = titles[0] if titles else {}
-    return str(first.get("id") or "").strip(), str(first.get("title") or "Sans titre").strip()
-
-
-def _date_filter(date_debut: Optional[str], date_fin: Optional[str]) -> List[Dict[str, Any]]:
-    if not date_debut and not date_fin:
-        return []
-    dates = {}
-    if date_debut:
-        dates["start"] = date_debut
-    if date_fin:
-        dates["end"] = borne_haute_reelle(date_fin)
-    return [{"facette": "DATE_DECISION", "dates": dates}]
-
-
-def _search_query(
-    client: Any,
-    query: str,
-    jurisdiction: str,
-    date_debut: Optional[str],
-    date_fin: Optional[str],
-    max_results: int,
-) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    config = JURIDICTION_CONFIG[jurisdiction]
-    operator, _search_type, criteria = parse_query(query)
-    filters = list(config["filtres"]) + _date_filter(date_debut, date_fin)
-    collected: List[Dict[str, Any]] = []
-    total = None
-    total_api_connu = False
-    page = 1
-    calls = 0
-
-    while len(collected) < max_results:
-        requested_page_size = min(PAGE_SIZE, max_results - len(collected))
-        response = client.search_with_criteres(
-            fond=config["fond"],
-            criteres=criteria,
-            operateur=operator,
-            filtres=filters,
-            type_champ="ALL",
-            page_number=page,
-            page_size=requested_page_size,
-            sort="PERTINENCE",
-        )
-        calls += 1
-        batch = response.get("results") or []
-        reported_total = response.get("totalResultNumber")
-        try:
-            parsed_total = int(reported_total) if reported_total is not None else None
-        except (TypeError, ValueError):
-            parsed_total = None
-        # Un zéro n'est fiable que pour une réponse vide. Une page non vide
-        # accompagnée d'un total nul doit rester traitée comme un total absent.
-        if parsed_total is not None and (parsed_total > 0 or not batch):
-            total = parsed_total
-            total_api_connu = True
-        if not batch:
-            break
-        collected.extend(batch)
-        if len(collected) >= max_results:
-            break
-        if len(batch) < requested_page_size:
-            break
-        if total_api_connu and len(collected) >= total:
-            break
-        page += 1
-
-    returned = collected[:max_results]
-    tronquee = (
-        len(returned) < total
-        if total_api_connu else len(returned) >= max_results
-    )
-    return returned, {
-        "query": query,
-        "juridiction": jurisdiction,
-        "total_api": total,
-        "total_api_connu": total_api_connu,
-        "collectes": len(returned),
-        "tronquee": tronquee,
-        "appels_recherche": calls,
-    }
-
-
-def _preflight_cumulative_total(
-    client: Any,
-    query: str,
-    jurisdictions: List[str],
-    date_debut: Optional[str],
-    date_fin: Optional[str],
-) -> List[Dict[str, Any]]:
-    """Lit les totaux officiels avant toute collecte ou téléchargement."""
-    reports = []
-    cumulative_total = 0
-    for jurisdiction in jurisdictions:
-        _results, report = _search_query(
-            client, query, jurisdiction, date_debut, date_fin, max_results=1,
-        )
-        total = report["total_api"]
-        if not report["total_api_connu"] or total is None:
-            raise ValueError(
-                "L'API Légifrance n'a pas fourni de nombre de résultats fiable ; "
-                "la recherche est arrêtée avant tout téléchargement."
-            )
-        cumulative_total += total
-        # Ce n'est pas une collecte : une page de taille 1 serait naturellement
-        # tronquée pour tout total supérieur à 1. Ne pas exposer ce signal comme
-        # une troncature du corpus dans la télémétrie.
-        reports.append({
-            "query": query,
-            "juridiction": jurisdiction,
-            "total_api": total,
-            "total_api_connu": True,
-            "appels_recherche": report["appels_recherche"],
-            "phase": "contrôle_préalable",
-        })
-
-    if cumulative_total > MAX_CUMULATIVE_RESULTS:
+def _collect(client: Any, args: Dict[str, Any], query: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    try:
+        plan = recherche.preparer({**args, "query": query}, dates_par_defaut=False)
+        return plan, recherche.collecter(plan, client)
+    except recherche.RechercheInvalide as error:
+        raise ValueError(str(error))
+    except recherche.RechercheTropLarge as too_broad:
         raise ValueError(
-            f"La formulation produit {cumulative_total} résultats cumulés pour les juridictions "
+            f"La formulation produit {too_broad.total} résultats cumulés pour les juridictions "
             f"demandées, au-delà de la limite absolue de {MAX_CUMULATIVE_RESULTS}. "
             "Aucun téléchargement n'a été lancé. Reformulez avec des guillemets pour une expression "
             "exacte, des mots juridiques choisis et les opérateurs ET/OU ; incluez si possible "
             "l'article de référence et bornez les dates à la version du texte applicable. Si les faits, "
             "la période ou le droit applicable restent incertains, posez d'abord des questions."
         )
-    return reports
 
 
 def _format_date(value: Any) -> str:
@@ -336,8 +180,6 @@ def _decision_record(seed: Dict[str, Any], response: Dict[str, Any]) -> Dict[str
         or _all_text(seed.get("analyse"))
     )
     title = _first_text(text.get("titre"), text.get("titreLong"), seed.get("titre"), seed.get("id"))
-    source_base = JURIDICTION_CONFIG[seed["juridiction_source"]]["link_base"]
-
     return {
         "id": seed["id"],
         "titre": title,
@@ -350,7 +192,41 @@ def _decision_record(seed: Dict[str, Any], response: Dict[str, Any]) -> Dict[str
         "publication": publication,
         "sommaire": summary,
         "texte": body,
-        "lien": f"{source_base}{seed['id']}",
+        "lien": seed["lien"],
+        "source": "legifrance",
+        "alias_judilibre": seed.get("alias_judilibre"),
+        "requêtes": seed["requêtes"],
+        "juridictions_recherche": seed["juridictions_recherche"],
+        "rang_min": seed["rang_min"],
+        "caracteres": len(body),
+        "tokens_texte_estimes": estimate_tokens(body),
+    }
+
+
+def _judilibre_record(seed: Dict[str, Any], decision: Dict[str, Any]) -> Dict[str, Any]:
+    body = str(decision.get("text") or "").strip()
+    summaries = []
+    for entry in decision.get("titlesAndSummaries") or []:
+        summary = recherche.sans_balises(entry.get("summary"))
+        if summary and summary not in summaries:
+            summaries.append(summary)
+    publication = decision.get("publication")
+    numbers = [str(n) for n in decision.get("numbers") or [] if n]
+    return {
+        "id": seed["id"],
+        "titre": recherche.titre_judilibre(decision, seed["titre"]),
+        "juridiction": recherche.sans_balises(decision.get("location")) or recherche.sans_balises(decision.get("jurisdiction")),
+        "formation": recherche.sans_balises(decision.get("formation")) or recherche.sans_balises(decision.get("chamber")),
+        "date": _format_date(decision.get("decision_date")),
+        "numero": recherche.sans_balises(decision.get("number")) or (numbers[0] if numbers else ""),
+        "ecli": recherche.sans_balises(decision.get("ecli")),
+        "solution": recherche.sans_balises(decision.get("solution")),
+        "publication": ", ".join(recherche.sans_balises(p) for p in publication) if isinstance(publication, list) else recherche.sans_balises(publication),
+        "sommaire": recherche.sans_balises(decision.get("summary")) or "\n".join(summaries),
+        "texte": body,
+        "lien": seed["lien"],
+        "source": "judilibre",
+        "alias_judilibre": None,
         "requêtes": seed["requêtes"],
         "juridictions_recherche": seed["juridictions_recherche"],
         "rang_min": seed["rang_min"],
@@ -363,8 +239,11 @@ def _fetch_one(client: Any, seed: Dict[str, Any], retries: int = 3) -> Tuple[Opt
     error = None
     for attempt in range(retries):
         try:
-            response = client.get_decision_text(seed["id"])
-            record = _decision_record(seed, response)
+            if seed["source"] == "judilibre":
+                decision = seed.pop("decision", None) or recherche.decision_judilibre(client, seed["id"])
+                record = _judilibre_record(seed, decision)
+            else:
+                record = _decision_record(seed, client.get_decision_text(seed["id"]))
             if not record["texte"]:
                 raise ValueError("texte intégral vide")
             return record, None
@@ -558,7 +437,6 @@ def build_research_corpus(args: Dict[str, Any], client: Any = None) -> Dict[str,
     if not question:
         raise ValueError("`question` est requise et doit formuler la question de droit")
     query = _clean_query(args)
-    jurisdictions = _clean_jurisdictions(args.get("juridictions"))
     target_tokens = min(
         max(5_000, int(args.get("batch_target_tokens") or DEFAULT_BATCH_TARGET_TOKENS)),
         HARD_BATCH_TARGET_TOKENS,
@@ -568,58 +446,25 @@ def build_research_corpus(args: Dict[str, Any], client: Any = None) -> Dict[str,
         HARD_BATCH_MAX_DECISIONS,
     )
     workers = min(max(1, int(args.get("fetch_workers") or DEFAULT_FETCH_WORKERS)), HARD_FETCH_WORKERS)
-    date_debut = args.get("date_debut") or None
-    date_fin = args.get("date_fin") or None
-
-    preflight_reports = _preflight_cumulative_total(
-        client, query, jurisdictions, date_debut, date_fin,
-    )
-    search_reports = []
+    plan, collected = _collect(client, args, query)
+    jurisdictions = plan["juridictions"]
+    date_debut = plan["date_debut"]
+    date_fin = plan["date_fin"]
     seeds: Dict[str, Dict[str, Any]] = {}
-    for jurisdiction in jurisdictions:
-        total = next(
-            item["total_api"] for item in preflight_reports
-            if item["juridiction"] == jurisdiction
-        )
-        if total == 0:
-            search_reports.append({
-                "query": query,
-                "juridiction": jurisdiction,
-                "total_api": 0,
-                "total_api_connu": True,
-                "collectes": 0,
-                "tronquee": False,
-                "appels_recherche": 0,
-                "phase": "collecte",
-            })
-            continue
-        results, report = _search_query(
-            client, query, jurisdiction, date_debut, date_fin,
-            total,
-        )
-        report["phase"] = "collecte"
-        search_reports.append(report)
-        if report["tronquee"]:
-            raise ValueError(
-                "La collecte Légifrance est incomplète après le contrôle préalable ; "
-                "aucun téléchargement n'a été lancé. Réessayez avec une formulation plus précise."
-            )
-        for rank, result in enumerate(results, 1):
-            text_id, title = _search_identity(result)
-            if not text_id:
-                continue
-            seed = seeds.setdefault(text_id, {
-                "id": text_id,
-                "titre": title,
-                "analyse": "",
-                "requêtes": [query],
-                "juridictions_recherche": [],
-                "juridiction_source": jurisdiction,
-                "rang_min": rank,
-            })
-            if jurisdiction not in seed["juridictions_recherche"]:
-                seed["juridictions_recherche"].append(jurisdiction)
-            seed["rang_min"] = min(seed["rang_min"], rank)
+    for rank, result in enumerate(collected["resultats"], 1):
+        seeds[result["id"]] = {
+            "id": result["id"],
+            "titre": result["titre"],
+            "lien": result["lien"],
+            "source": result["source"],
+            "alias_judilibre": (result.get("judilibre") or {}).get("id"),
+            "decision": result.get("decision"),
+            "analyse": "",
+            "requêtes": [query],
+            "juridictions_recherche": [result["juridiction"]],
+            "juridiction_source": result["juridiction"],
+            "rang_min": rank,
+        }
 
     # Initialise le jeton avant le parallélisme lorsque le client réel expose
     # cette méthode. Les clients de test n'en ont pas besoin.
@@ -762,14 +607,12 @@ def build_research_corpus(args: Dict[str, Any], client: Any = None) -> Dict[str,
     telemetry = {
         "methode": "corpus exhaustif fixe, sans embeddings ni top-k",
         "estimation_tokens": TOKEN_ESTIMATION_METHOD,
-        "contrôle_préalable": preflight_reports,
-        "total_resultats_cumules_avant_deduplication": sum(
-            report["total_api"] for report in preflight_reports
-        ),
-        "requêtes": search_reports,
-        "appels_api_recherche": sum(
-            report["appels_recherche"] for report in [*preflight_reports, *search_reports]
-        ),
+        "contrôle_préalable": collected["comptes"],
+        "total_resultats_cumules_avant_deduplication": collected["total_avant_fusion"],
+        "doublons_legifrance_judilibre_fusionnes": collected["fusionnees"],
+        "resultats_judilibre_ecartes_expression_absente": collected["ecartees"],
+        "avertissements": collected["avertissements"],
+        "appels_api_recherche": collected["appels"],
         "decisions_identifiees_dedoublonnees": len(seeds),
         "decisions_texte_integral_telecharge": len(records),
         "decisions_scannees": len(records),
@@ -794,6 +637,15 @@ def build_research_corpus(args: Dict[str, Any], client: Any = None) -> Dict[str,
         "report": report_path,
         "query": query,
         "juridictions": jurisdictions,
+        "sources": plan["sources"],
+        "filtres": {
+            "matiere": plan["matieres"],
+            "publication_cassation": plan["publication_cassation"],
+            "sieges_appel": plan["sieges_appel"],
+            "types_premiere_instance": plan["types_premiere_instance"],
+            "villes_caa": plan["villes_caa"],
+            "publication_recueil": plan["publication_recueil"],
+        },
         "date_debut": date_debut,
         "date_fin": date_fin,
         "created": datetime.now().isoformat(timespec="seconds"),

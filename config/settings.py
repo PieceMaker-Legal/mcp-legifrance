@@ -53,6 +53,10 @@ LEGIFRANCE_API_URL = (
     "https://sandbox-api.piste.gouv.fr/dila/legifrance/lf-engine-app" if _SANDBOX
     else "https://api.piste.gouv.fr/dila/legifrance/lf-engine-app"
 )
+JUDILIBRE_API_URL = (
+    "https://sandbox-api.piste.gouv.fr/cassation/judilibre/v1.0" if _SANDBOX
+    else "https://api.piste.gouv.fr/cassation/judilibre/v1.0"
+)
 
 # BODACC (API publique, sans authentification)
 BODACC_API_URL = "https://bodacc-datadila.opendatasoft.com/api/v2/catalog/datasets/annonces-commerciales/records"

@@ -17,222 +17,53 @@ INITIALIZE_INSTRUCTIONS = (
     "demande une clarification."
 )
 
-QUERY_DESCRIPTION = "Requête Légifrance unique."
+from tools.jurisprudence_search import (
+    FAMILLES_PREMIER_DEGRE,
+    JURIDICTIONS,
+    MATIERES_CASSATION,
+    PUBLICATIONS_CASSATION,
+    PUBLICATIONS_RECUEIL,
+    SIEGES_APPEL,
+    SOURCES,
+    VILLES_CAA,
+)
+
+QUERY_DESCRIPTION = "Requête unique, appliquée telle quelle à Légifrance et à Judilibre."
 
 QUERY_PREMIERE_INSTANCE_DESCRIPTION = (
-    "Requête Légifrance unique. Sans `ET` ou `OU` explicite, les mots non entre guillemets "
+    "En première instance, sans `ET` ou `OU` explicite, les mots non entre guillemets "
     "sont reliés par `OU` afin d'élargir ce corpus limité."
 )
 
-MCP_TOOLS = [
-# ============================================================================
-    # OUTILS RECHERCHE JURISPRUDENCE - VERSION OPTIMISÉE
-    # ============================================================================
-    {
-        "name": "Search_Cour_Cassation",
-        "description": "Recherche ciblée dans la jurisprudence de la COUR DE CASSATION avec parsing intelligent de la query.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": QUERY_DESCRIPTION
-                },
-                "matiere": {
-                    "type": "array",
-                    "items": {
-                        "type": "string",
-                        "enum": ["CIVIL", "COMMERCIAL", "PENAL", "SOCIAL"]
-                    },
-                    "minItems": 1,
-                    "description": "OBLIGATOIRE. Matière(s) de la question posée, appliquée(s) à la facette officielle des formations (chambres) de la Cour de cassation. CIVIL (contrats, famille, immobilier, responsabilité civile), COMMERCIAL (sociétés, dirigeants, procédures collectives, concurrence), PENAL (chambre criminelle), SOCIAL (travail, sécurité sociale). Les formations transversales (assemblée plénière, chambre mixte, chambres réunies, avis) sont toujours incluses. Sans ce filtre la recherche mélange toutes les chambres: une question de révocation de dirigeant remonterait des arrêts criminels. Plusieurs matières sont possibles quand la question est réellement mixte (ex: [\"CIVIL\", \"COMMERCIAL\"]); n'énumérez les quatre que pour balayer volontairement toute la Cour."
-                },
-                "CASSATION_TYPE_PUBLICATION_BULLETIN": {
-                    "type": "string",
-                    "enum": ["TOUS", "PUBLIE", "INEDIT"],
-                    "default": "TOUS",
-                    "description": "PUBLIE = arrêts de principe uniquement"
-                },
-                "date_debut": {
-                    "type": "string",
-                    "description": "Date début YYYY-MM-DD (défaut: 5 ans en arrière)"
-                },
-                "date_fin": {
-                    "type": "string",
-                    "description": "Date fin YYYY-MM-DD (défaut: aujourd'hui)"
-                },
-                "page_size": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 100,
-                    "default": 10
-                },
-                "page_number": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "default": 1
-                }
-            },
-            "required": ["query", "matiere"]
-        }
+FILTRES_RECHERCHE = {
+    "sources": {
+        "type": "array",
+        "items": {"type": "string", "enum": SOURCES},
+        "minItems": 1,
+        "description": "Bases interrogées. Défaut : les deux. Judilibre ne couvre que l'ordre judiciaire."
     },
-    {
-        "name": "Search_Cour_Appel",
-        "description": "Recherche dans la jurisprudence des COURS D'APPEL avec parsing intelligent. Volume important: bien cibler avec ville + dates. Le fonds JURI n'expose AUCUNE facette de matière ni de chambre pour les cours d'appel (contrairement à la Cour de cassation): le ciblage par matière passe donc uniquement par des mots-clés ou un article visé dans la query. Vérifié sur la table officielle DILA des tris et filtres (voir docs/facettes-officielles-dila.md): seul APPEL_SIEGE_APPEL (la ville) existe pour ce degré.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": QUERY_DESCRIPTION
-                },
-                "APPEL_SIEGE_APPEL": {
-                    "type": "array",
-                    "items": {
-                        "type": "string",
-                        "enum": ["PARIS", "VERSAILLES", "LYON", "AIX-PROVENCE", "TOULOUSE", "BORDEAUX", "RENNES", "DOUAI", "MONTPELLIER", "ROUEN", "NANCY", "DIJON", "GRENOBLE", "ANGERS", "ORLEANS", "AMIENS", "METZ", "NIMES", "LIMOGES", "CAEN", "REIMS", "BOURGES", "POITIERS", "RIOM", "PAU", "BESANCON", "AGEN", "COLMAR", "BASTIA", "CHAMBERY", "BASSE-TERRE", "FORT-DE-FRANCE", "CAYENNE", "ST-DENIS-REUNION", "NOUMEA", "PAPEETE"]
-                    },
-                    "description": "Cour(s) d'appel ciblée(s) par ville"
-                },
-                "date_debut": {
-                    "type": "string",
-                    "description": "Date début YYYY-MM-DD (défaut: 3 ans)"
-                },
-                "date_fin": {
-                    "type": "string",
-                    "description": "Date fin YYYY-MM-DD"
-                },
-                "page_size": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 100,
-                    "default": 15
-                },
-                "page_number": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "default": 1
-                }
-            },
-            "required": ["query"]
-        }
+    "matiere": {
+        "type": "array",
+        "items": {"type": "string", "enum": list(MATIERES_CASSATION)},
+        "minItems": 1,
+        "description": "OBLIGATOIRE si `juridictions` contient cassation. Matière(s) de la question, appliquée(s) aux chambres de la Cour de cassation (Légifrance : CASSATION_FORMATION ; Judilibre : chamber). CIVIL (contrats, famille, immobilier, responsabilité civile), COMMERCIAL (sociétés, dirigeants, procédures collectives, concurrence), PENAL (chambre criminelle), SOCIAL (travail, sécurité sociale). Les formations transversales (assemblée plénière, chambre mixte, chambres réunies, avis) sont toujours incluses. N'énumérez les quatre que pour balayer volontairement toute la Cour."
     },
-    {
-        "name": "Search_Conseil_Etat",
-        "description": "Recherche ciblée dans la jurisprudence du CONSEIL D'ÉTAT avec parsing intelligent de la query. Le fonds CETAT n'expose pas de facette de matière ni de chambre (table officielle DILA des tris et filtres, voir docs/facettes-officielles-dila.md): le ciblage passe par la query.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": QUERY_DESCRIPTION
-                },
-                "PUBLICATION_RECUEIL": {
-                    "type": "string",
-                    "enum": ["TOUS", "PUBLIE", "NON_PUBLIE"],
-                    "default": "TOUS",
-                    "description": "PUBLIE = décisions publiées au recueil Lebon uniquement"
-                },
-                "date_debut": {
-                    "type": "string",
-                    "description": "Date début YYYY-MM-DD (défaut: 5 ans en arrière)"
-                },
-                "date_fin": {
-                    "type": "string",
-                    "description": "Date fin YYYY-MM-DD (défaut: aujourd'hui)"
-                },
-                "page_size": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 100,
-                    "default": 10
-                },
-                "page_number": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "default": 1
-                }
-            },
-            "required": ["query"]
-        }
+    "publication_cassation": {
+        "type": "string",
+        "enum": list(PUBLICATIONS_CASSATION),
+        "default": "TOUS",
+        "description": "Cour de cassation. PUBLIE = arrêts publiés au Bulletin ; INEDIT = non publiés."
     },
-    {
-        "name": "Search_CAA",
-        "description": "Recherche dans la jurisprudence des COURS ADMINISTRATIVES D'APPEL avec parsing intelligent. Permet de filtrer par ville de la CAA. Le fonds CETAT n'expose pas de facette de matière ni de chambre (table officielle DILA des tris et filtres, voir docs/facettes-officielles-dila.md); le filtre de ville est appliqué côté serveur par la facette hiérarchique JURIDICTION_NATURE.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": QUERY_DESCRIPTION
-                },
-                "CAA_VILLE": {
-                    "type": "array",
-                    "items": {
-                        "type": "string",
-                        "enum": ["PARIS", "VERSAILLES", "LYON", "MARSEILLE", "BORDEAUX", "NANTES", "NANCY", "DOUAI", "TOULOUSE"]
-                    },
-                    "description": "Cour(s) administrative(s) d'appel ciblée(s) par ville"
-                },
-                "PUBLICATION_RECUEIL": {
-                    "type": "string",
-                    "enum": ["TOUS", "PUBLIE", "NON_PUBLIE"],
-                    "default": "TOUS",
-                    "description": "PUBLIE = décisions publiées au recueil Lebon uniquement"
-                },
-                "date_debut": {
-                    "type": "string",
-                    "description": "Date début YYYY-MM-DD (défaut: 3 ans)"
-                },
-                "date_fin": {
-                    "type": "string",
-                    "description": "Date fin YYYY-MM-DD"
-                },
-                "page_size": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 100,
-                    "default": 15
-                },
-                "page_number": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "default": 1
-                }
-            },
-            "required": ["query"]
-        }
+    "sieges_appel": {
+        "type": "array",
+        "items": {"type": "string", "enum": SIEGES_APPEL},
+        "description": "Cour(s) d'appel ciblée(s) par ville. Sans valeur : toutes."
     },
-    {
-        "name": "Search_Premiere_Instance",
-        "description": "Recherche dans la jurisprudence des JURIDICTIONS DE PREMIÈRE INSTANCE. Volume très limité dans la base (~2000 décisions). Query automatiquement optimisée (opérateur OU, au moins un mot - car volume faible). À ce degré, la matière est portée par le NOM de la juridiction et non par une chambre: le filtre PREMIER_DEGRE_TYPE_JURIDICTION est donc OBLIGATOIRE (table officielle DILA des tris et filtres, voir docs/facettes-officielles-dila.md).",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": QUERY_PREMIERE_INSTANCE_DESCRIPTION
-                },
-                "PREMIER_DEGRE_TYPE_JURIDICTION": {
-                    "type": "array",
-                    "items": {
-                        "type": "string",
-                        "enum": [
-                            "TRIBUNAL_JUDICIAIRE",
-                            "TRIBUNAL_GRANDE_INSTANCE",
-                            "TRIBUNAL_INSTANCE",
-                            "TRIBUNAL_COMMERCE",
-                            "CONSEIL_PRUDHOMMES",
-                            "TRIBUNAL_CORRECTIONNEL",
-                            "TRIBUNAL_SECURITE_SOCIALE",
-                            "TRIBUNAL_BAUX_RURAUX",
-                            "JURIDICTION_PROXIMITE",
-                            "OUTRE_MER",
-                            "TRIBUNAL_CONFLITS"
-                        ]
-                    },
-                    "minItems": 1,
-                    "description": """OBLIGATOIRE. Famille(s) de juridictions du premier degre. A ce degre, c'est le nom de la juridiction qui porte la matiere: sans ce filtre la recherche melange prud'hommes, correctionnel et commerce.
+    "types_premiere_instance": {
+        "type": "array",
+        "items": {"type": "string", "enum": list(FAMILLES_PREMIER_DEGRE)},
+        "minItems": 1,
+        "description": """OBLIGATOIRE si `juridictions` contient premiere_instance. A ce degre, c'est le nom de la juridiction qui porte la matiere.
 
 Correspondance matiere -> famille:
 - civil general: TRIBUNAL_JUDICIAIRE, TRIBUNAL_GRANDE_INSTANCE, TRIBUNAL_INSTANCE
@@ -244,23 +75,64 @@ Correspondance matiere -> famille:
 - Noumea, Papeete, Mamoudzou, Saint-Pierre: OUTRE_MER
 - conflits de competence judiciaire/administratif: TRIBUNAL_CONFLITS
 
-Chaque famille est etendue aux valeurs reelles de la facette officielle PREMIER_DEGRE_TYPE_JURIDICTION, qui mele libelles generiques ("Conseil de prud'hommes") et libelles par ville ("Tribunal correctionnel de Nice").
+Chaque famille est etendue aux libelles reels de la facette Legifrance PREMIER_DEGRE_TYPE_JURIDICTION. Judilibre couvre TRIBUNAL_JUDICIAIRE et TRIBUNAL_COMMERCE."""
+    },
+    "villes_caa": {
+        "type": "array",
+        "items": {"type": "string", "enum": VILLES_CAA},
+        "description": "Cour(s) administrative(s) d'appel ciblée(s) par ville. Sans valeur : toutes."
+    },
+    "publication_recueil": {
+        "type": "string",
+        "enum": PUBLICATIONS_RECUEIL,
+        "default": "TOUS",
+        "description": "Conseil d'État et CAA. PUBLIE = décisions publiées au recueil Lebon."
+    }
+}
 
-Ces jetons de famille sont une taxinomie propre a ce serveur : ils ne sont jamais envoyes tels quels a l'API. La facette officielle est contextuelle a la requete en cours, ce qui interdit d'en figer les libelles reels dans cette enumeration."""
+MCP_TOOLS = [
+# ============================================================================
+    # OUTILS RECHERCHE JURISPRUDENCE - VERSION OPTIMISÉE
+    # ============================================================================
+    {
+        "name": "Search_Jurisprudence",
+        "description": (
+            "Outil unique de recherche jurisprudentielle : interroge en un appel Légifrance (fonds JURI "
+            "et CETAT) et Judilibre (Cour de cassation, cours d'appel, tribunaux judiciaires et de "
+            "commerce), applique les mêmes filtres et la même requête booléenne aux deux sources, puis "
+            "fusionne les doublons (même juridiction, même date, même numéro). Légifrance n'a plus de "
+            "décisions de cours d'appel depuis 2023 ni de première instance depuis 2024 : Judilibre "
+            "les fournit. Le Conseil d'État et les CAA ne sont que dans Légifrance. Au-delà de 500 "
+            "résultats cumulés, la recherche est refusée. Les résultats sont triés du plus récent au "
+            "plus ancien ; `consulter_decision` lit ensuite un identifiant Légifrance ou Judilibre."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": f"{QUERY_DESCRIPTION} {QUERY_PREMIERE_INSTANCE_DESCRIPTION}"
                 },
+                "juridictions": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": JURIDICTIONS},
+                    "minItems": 1,
+                    "description": "Juridictions interrogées ensemble. Défaut : cassation."
+                },
+                **FILTRES_RECHERCHE,
                 "date_debut": {
                     "type": "string",
-                    "description": "Date début YYYY-MM-DD"
+                    "description": "Date de décision minimale AAAA-MM-JJ. Défaut : 5 ans (cassation, Conseil d'État, première instance) ou 3 ans (cours d'appel, CAA)."
                 },
                 "date_fin": {
                     "type": "string",
-                    "description": "Date fin YYYY-MM-DD"
+                    "description": "Date de décision maximale AAAA-MM-JJ. Défaut : aujourd'hui."
                 },
                 "page_size": {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": 100,
-                    "default": 20
+                    "default": 10
                 },
                 "page_number": {
                     "type": "integer",
@@ -268,7 +140,7 @@ Ces jetons de famille sont une taxinomie propre a ce serveur : ils ne sont jamai
                     "default": 1
                 }
             },
-            "required": ["query", "PREMIER_DEGRE_TYPE_JURIDICTION"]
+            "required": ["query", "juridictions"]
         }
     },
     {
@@ -329,13 +201,13 @@ Ces jetons de famille sont une taxinomie propre a ce serveur : ils ne sont jamai
     },
         {
             "name": "consulter_decision",
-            "description": "Get Jurisprudence content with Legifrance API & return result with link https://www.legifrance.gouv.fr/juri/id/{text_id}",
+            "description": "Texte intégral d'une décision : identifiant Légifrance (JURITEXT, CETATEXT) ou identifiant Judilibre (24 caractères hexadécimaux) rendu par Search_Jurisprudence.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "text_id": {
                         "type": "string",
-                        "description": "Should be in format : 'JURITEXT000006949246')"
+                        "description": "JURITEXT000006949246, CETATEXT000047444867 ou 65f1c2a8e4b0c0a1b2c3d4e5"
                     }
                 },
                 "required": ["text_id"]
@@ -459,7 +331,8 @@ Ces jetons de famille sont une taxinomie propre a ce serveur : ils ne sont jamai
         "name": "Build_Research_Corpus",
         "description": (
             "Constitue un corpus jurisprudentiel à partir d'une question de droit et d'une seule "
-            "formulation Légifrance précise. Avant tout téléchargement, le total officiel cumulé des "
+            "formulation précise, recherchée dans Légifrance et Judilibre par le même moteur et avec "
+            "les mêmes filtres que Search_Jurisprudence. Avant tout téléchargement, le total officiel cumulé des "
             "juridictions est contrôlé et l'appel est refusé au-delà de 500 résultats ; tout corpus "
             "créé contient donc au plus 500 décisions dédupliquées et prépare leur revue par lots."
         ),
@@ -479,13 +352,11 @@ Ces jetons de famille sont une taxinomie propre a ce serveur : ils ne sont jamai
                 },
                 "juridictions": {
                     "type": "array",
-                    "items": {
-                        "type": "string",
-                        "enum": ["cassation", "appel", "premiere_instance", "administratif"]
-                    },
+                    "items": {"type": "string", "enum": JURIDICTIONS + ["administratif"]},
                     "default": ["cassation"],
-                    "description": "Corpus interrogés pour l'unique formulation. Le totalResultNumber cumulé de toutes les juridictions doit être au plus 500 avant tout téléchargement."
+                    "description": "Corpus interrogés pour l'unique formulation, avec le moteur et les filtres de Search_Jurisprudence (administratif = conseil_etat + caa). Le total cumulé Légifrance + Judilibre doit être au plus 500 avant tout téléchargement."
                 },
+                **FILTRES_RECHERCHE,
                 "date_debut": {
                     "type": "string",
                     "description": "Date minimale AAAA-MM-JJ. Sans valeur, aucune borne ancienne n'est ajoutée : les arrêts de principe historiques restent couverts."

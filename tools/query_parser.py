@@ -14,9 +14,11 @@ class QueryCriteria(list):
     les critères.
     """
 
-    def __init__(self, criteria: List[Dict[str, Any]], clauses: List[List[Dict[str, Any]]]):
+    def __init__(self, criteria: List[Dict[str, Any]], clauses: List[List[Dict[str, Any]]],
+                 explicit_operators: bool = False):
         super().__init__(criteria)
         self.clauses = clauses
+        self.explicit_operators = explicit_operators
 
 def normalize_article_reference(ref: str) -> str:
     """
@@ -204,7 +206,8 @@ def parse_query(query: str, proximite: int = 10) -> Tuple[str, str, List[Dict[st
         "EXACTE" if flattened and all(c["typeRecherche"] == "EXACTE" for c in flattened)
         else "TOUS_LES_MOTS_DANS_UN_CHAMP"
     )
-    return operateur_global, type_recherche, QueryCriteria(flattened, clauses)
+    explicit = any(token[0] in {"ET", "OU"} for token in tokens)
+    return operateur_global, type_recherche, QueryCriteria(flattened, clauses, explicit)
 
 
 def build_search_payload_champs(query: str, proximite: int = 10) -> Tuple[str, str, List[Dict[str, Any]]]:

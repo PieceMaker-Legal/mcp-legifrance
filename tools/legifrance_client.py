@@ -10,7 +10,8 @@ from config.settings import (
     LEGIFRANCE_CLIENT_ID,
     LEGIFRANCE_CLIENT_SECRET,
     LEGIFRANCE_OAUTH_URL,
-    LEGIFRANCE_API_URL
+    LEGIFRANCE_API_URL,
+    JUDILIBRE_API_URL
 )
 
 # L'API Légifrance n'écrit jamais l'absence de date : elle utilise le
@@ -64,6 +65,10 @@ def borne_haute_reelle(date_fin: Any) -> Any:
     if est_date_absente(date_fin):
         return DATE_FIN_REELLE_MAX
     return date_fin
+
+
+class JudilibreError(Exception):
+    pass
 
 
 class LegifranceClient:
@@ -140,6 +145,28 @@ class LegifranceClient:
         
         except requests.exceptions.RequestException as e:
             raise Exception(f"Erreur lors de la requête API: {str(e)}")
+
+    def judilibre(self, route: str, params: List[tuple]) -> Dict[str, Any]:
+        token = self._get_token()
+        try:
+            response = requests.get(
+                f"{JUDILIBRE_API_URL}{route}",
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                params=params,
+                timeout=30
+            )
+        except requests.exceptions.RequestException as e:
+            raise JudilibreError(f"API Judilibre injoignable : {e}")
+        if response.status_code in (401, 403):
+            raise JudilibreError(
+                f"accès refusé par PISTE (HTTP {response.status_code}) : abonnez l'application PISTE à l'API Judilibre"
+            )
+        if not response.ok:
+            raise JudilibreError(f"HTTP {response.status_code} : {response.text[:200]}")
+        try:
+            return response.json()
+        except ValueError:
+            raise JudilibreError("réponse illisible")
 
     def search_with_criteres(self, fond: str, criteres: List[Dict[str, Any]],
                              operateur: str = "ET", filtres: Optional[List[Dict]] = None,

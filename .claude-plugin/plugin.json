@@ -1,7 +1,7 @@
 {
   "name": "piecemaker",
-  "version": "1.0.1",
-  "description": "Accès MCP autonome aux sources juridiques officielles françaises via Légifrance et PISTE.",
+  "version": "1.1.0",
+  "description": "Accès MCP autonome aux sources juridiques officielles françaises via Légifrance, Judilibre et PISTE.",
   "author": {
     "name": "PieceMaker Legal"
   },

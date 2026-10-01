@@ -4,16 +4,16 @@
 
 import json
 import os
-import unicodedata
-from datetime import datetime, timedelta
+import re
+from datetime import datetime
 from typing import Dict, Any, Optional
 
 from tools.session_manager import session_manager
 from tools.case_manager import case_manager
-from tools.legifrance_client import legifrance_client, est_date_absente, borne_haute_reelle
+from tools import jurisprudence_search as recherche
+from tools.legifrance_client import legifrance_client, est_date_absente
 from tools.bodacc_client import bodacc_client
 from tools.justice_lexicon import JusticeLexiconError, justice_lexicon_client
-from tools.query_parser import parse_query
 from tools.code_parser import parse_code_query
 from tools.research_corpus import build_research_corpus
 from tools.decision_history import (
@@ -227,6 +227,29 @@ def handle_dictionnaire_juridique(args: Dict[str, Any], user_id: str) -> Dict[st
     return create_response("\n".join(result["suggestions"]))
 
 
+def _consulter_decision_judilibre(text_id: str) -> Dict[str, Any]:
+    decision = recherche.decision_judilibre(legifrance_client, text_id)
+    texte = str(decision.get("text") or "").strip()
+    lien = f"{recherche.LIEN_JUDILIBRE}{text_id}"
+    parts = [f"DÉCISION: {recherche.titre_judilibre(decision, text_id)}", ""]
+    for libelle, valeur in (
+        ("Formation", decision.get("formation") or decision.get("chamber")),
+        ("Solution", decision.get("solution")),
+        ("Publication", ", ".join(map(str, decision.get("publication") or [])) if isinstance(decision.get("publication"), list) else decision.get("publication")),
+        ("ECLI", decision.get("ecli")),
+    ):
+        if recherche.sans_balises(valeur):
+            parts.append(f"{libelle}: {recherche.sans_balises(valeur)}")
+    if recherche.sans_balises(decision.get("visa")):
+        parts += ["", "VISAS:", recherche.sans_balises(decision.get("visa"))]
+    if len(texte) // 4 > 25000:
+        return create_response(
+            "\n".join(parts + ["", f"⚠️ **Décision trop longue** (≈ {len(texte) // 4:,} tokens)".replace(",", " "), f"Lien: {lien}", "", "Le texte intégral est joint comme ressource MCP."]),
+            resource={"uri": f"judilibre://decision/{text_id}/texte-integral", "mimeType": "text/plain; charset=utf-8", "text": texte},
+        )
+    return create_response("\n".join(parts + ["", "=" * 80, "TEXTE INTÉGRAL:", "=" * 80, "", texte, "", f"Lien: {lien}"]))
+
+
 def handle_consulter_decision(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     """
     Récupère le texte intégral d'une décision de jurisprudence.
@@ -237,10 +260,12 @@ def handle_consulter_decision(args: Dict[str, Any], user_id: str) -> Dict[str, A
     if not text_id:
         return create_response("text_id requis", is_error=True)
 
-    # Nettoyer l'ID
     text_id = text_id.strip()
+    lien = f"{recherche.LIENS_LEGIFRANCE['CETAT' if text_id.startswith('CETATEXT') else 'JURI']}{text_id}"
 
     try:
+        if re.fullmatch(r"[0-9a-f]{24}", text_id):
+            return _consulter_decision_judilibre(text_id)
         result = legifrance_client.get_decision_text(text_id)
 
         # Extraire uniquement les champs demandés
@@ -281,9 +306,8 @@ def handle_consulter_decision(args: Dict[str, Any], user_id: str) -> Dict[str, A
             if formation or date_da_reelle:
                 summary_parts.append(f"")
                 summary_parts.append(f"Décision attaquée: {formation}")
-                if date_da_reelle:
-                    from datetime import datetime
-                    date_str = datetime.fromtimestamp(date_da / 1000).strftime("%d/%m/%Y")
+                date_str = recherche.date_longue(recherche.date_iso(date_da)) if date_da_reelle else ""
+                if date_str:
                     summary_parts.append(f"Date: {date_str}")
 
         # Texte intégral
@@ -294,7 +318,7 @@ def handle_consulter_decision(args: Dict[str, Any], user_id: str) -> Dict[str, A
         summary_parts.append(f"")
         summary_parts.append(texte)
         summary_parts.append(f"")
-        summary_parts.append(f"Lien: {LEGIFRANCE_BASE_URL}/juri/id/{text_id}")
+        summary_parts.append(f"Lien: {lien}")
 
         summary = "\n".join(summary_parts)
 
@@ -313,7 +337,7 @@ def handle_consulter_decision(args: Dict[str, Any], user_id: str) -> Dict[str, A
                 f"⚠️ **Décision trop longue** (≈ {estimated_tokens:,} tokens)".replace(',', ' '),
                 f"",
                 f"Nature: {nature}",
-                f"Lien: {LEGIFRANCE_BASE_URL}/juri/id/{text_id}",
+                f"Lien: {lien}",
                 f"",
                 "Le texte intégral est joint comme ressource MCP."
             ])
@@ -415,917 +439,148 @@ def handle_consulter_article(args: Dict[str, Any], user_id: str) -> Dict[str, An
             is_error=True
         )
 
-# ============================================================================
-# NOUVEAUX HANDLERS - RECHERCHE JURISPRUDENCE OPTIMISÉE
-# ============================================================================
-
-# Matières juridiques exposées par les outils de recherche Cour de cassation,
-# mappées sur la facette officielle CASSATION_FORMATION du fonds JURI. Les
-# formations transversales (assemblée plénière, chambre mixte, chambres
-# réunies, avis) restent jointes à chaque matière : elles statuent sur toutes.
-FORMATIONS_TRANSVERSALES = [
-    "ASSEMBLEE_PLENIERE",
-    "CHAMBRE_MIXTE",
-    "CHAMBRES_REUNIES",
-    "AVIS",
-]
-
-MATIERES_CASSATION = {
-    "CIVIL": ["CHAMBRE_CIVILE_1", "CHAMBRE_CIVILE_2", "CHAMBRE_CIVILE_3", "CHAMBRE_CIVILE"],
-    "COMMERCIAL": ["CHAMBRE_COMMERCIALE"],
-    "PENAL": ["CHAMBRE_CRIMINELLE"],
-    "SOCIAL": ["CHAMBRE_SOCIALE"],
-}
+def _articles_vises(resultat: Dict[str, Any]) -> list[str]:
+    articles = []
+    for section in resultat.get("sections", []) or []:
+        for extract in section.get("extracts", []) or []:
+            if extract.get("searchFieldName", "") != "Texte appliqué":
+                continue
+            for valeur in extract.get("values", []) or []:
+                propre = valeur.replace("<mark>", "").replace("</mark>", "").replace("[...]", "").strip()
+                if propre and propre not in articles:
+                    articles.append(propre)
+    return articles
 
 
-def formations_cassation(matiere):
-    """
-    Normalise l'argument `matiere` et rend (matières retenues, formations API).
-
-    Le filtre est obligatoire : sans lui, une recherche renvoie les décisions
-    de toutes les chambres, y compris la chambre criminelle sur une question
-    purement civile ou commerciale. `TOUTES` n'est donc plus accepté : pour
-    couvrir l'ensemble des chambres, il faut énumérer les quatre matières.
-    """
-    if matiere is None:
-        demandees = []
-    elif isinstance(matiere, str):
-        demandees = [m.strip() for m in matiere.split(",")]
-    elif isinstance(matiere, (list, tuple)):
-        demandees = [str(m).strip() for m in matiere]
-    else:
-        demandees = []
-
-    demandees = [m.upper() for m in demandees if m]
-    connues = ", ".join(MATIERES_CASSATION)
-
-    if not demandees:
-        raise ValueError(
-            "Filtre `matiere` obligatoire : indiquez au moins une matière parmi "
-            f"{connues}.\n"
-            "Sans ce filtre, la recherche renvoie toutes les chambres, y compris "
-            "la chambre criminelle sur une question civile ou commerciale.\n"
-            "Pour couvrir volontairement toutes les chambres, énumérez les "
-            "quatre matières."
-        )
-
-    inconnues = [m for m in demandees if m not in MATIERES_CASSATION]
-    if inconnues:
-        raise ValueError(
-            f"Matière(s) inconnue(s) : {', '.join(inconnues)}. "
-            f"Valeurs acceptées : {connues}."
-        )
-
-    retenues = []
-    formations = []
-    for m in demandees:
-        if m in retenues:
-            continue
-        retenues.append(m)
-        for formation in MATIERES_CASSATION[m]:
-            if formation not in formations:
-                formations.append(formation)
-    formations.extend(FORMATIONS_TRANSVERSALES)
-    return retenues, formations
+def _analyse_judilibre(decision: Dict[str, Any], resultat: Dict[str, Any]) -> tuple[str, str]:
+    resumes = []
+    for entree in decision.get("titlesAndSummaries") or []:
+        resume = recherche.sans_balises(entree.get("summary"))
+        if resume and resume not in resumes:
+            resumes.append(resume)
+    resume = recherche.sans_balises(decision.get("summary") or resultat.get("summary")) or "\n".join(resumes)
+    if resume:
+        return "Analyse", resume
+    extraits = (resultat.get("highlights") or {}).get("text") or []
+    extrait = " […] ".join(str(e).replace("<em>", "**").replace("</em>", "**").strip() for e in extraits[:3] if e)
+    return ("Extraits", extrait) if extrait else ("", "")
 
 
-def handle_search_cour_cassation(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
-    """Recherche Cour de cassation avec parsing intelligent de la query"""
+def _ligne_compte(compte: Dict[str, Any]) -> str:
+    morceaux = []
+    if compte["legifrance"] is not None:
+        morceaux.append(f"Légifrance {compte['legifrance']}")
+    if compte["judilibre"] is not None:
+        morceaux.append(f"Judilibre {compte['judilibre']}")
+    periode = f"{compte['debut'] or 'origine'} → {compte['fin'] or 'aujourd’hui'}"
+    return f"- {recherche.LIBELLES_JURIDICTIONS[compte['juridiction']]} ({periode}) : {', '.join(morceaux) or 'aucune source'}"
 
-    query = args.get("query", "").strip()
 
-    # Parser la query pour extraire opérateurs et termes
-    operateur_query, type_recherche, criteres_parsed = parse_query(query)
-    type_champ = "ALL"
+def _lignes_filtres(plan: Dict[str, Any]) -> list[str]:
+    lignes = []
+    if plan["matieres"]:
+        lignes.append(f"**Matière (cassation):** {', '.join(plan['matieres'])}")
+    if "cassation" in plan["juridictions"] and plan["publication_cassation"] != "TOUS":
+        lignes.append(f"**Publication (cassation):** {plan['publication_cassation']}")
+    if "appel" in plan["juridictions"] and plan["sieges_appel"]:
+        lignes.append(f"**Cour(s) d'appel:** {', '.join(plan['sieges_appel'])}")
+    if plan["types_premiere_instance"]:
+        lignes.append(f"**Première instance:** {', '.join(plan['types_premiere_instance'])}")
+    if "caa" in plan["juridictions"] and plan["villes_caa"]:
+        lignes.append(f"**CAA:** {', '.join(plan['villes_caa'])}")
+    if {"conseil_etat", "caa"} & set(plan["juridictions"]) and plan["publication_recueil"] != "TOUS":
+        lignes.append(f"**Recueil Lebon:** {plan['publication_recueil']}")
+    return lignes
 
-    # Dates par défaut : 5 ans
-    date_fin = args.get("date_fin")
-    date_debut = args.get("date_debut")
-    if not date_fin:
-        date_fin = datetime.now().strftime("%Y-%m-%d")
-    if not date_debut:
-        date_debut = (datetime.now() - timedelta(days=5*365)).strftime("%Y-%m-%d")
-    # Une borne haute à la sentinelle (2999-01-01) viderait silencieusement le
-    # résultat ; on la ramène à la dernière date réelle exploitable pour que
-    # le filtre DATE_DECISION et l'affichage « Période: » montrent la même
-    # borne, celle réellement envoyée à l'API.
-    date_fin = borne_haute_reelle(date_fin)
 
-    # Pagination et tri
-    sort = "PERTINENCE"  # Fixé sur PERTINENCE
+def handle_recherche_jurisprudence(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
+    try:
+        plan = recherche.preparer(args)
+    except recherche.RechercheInvalide as erreur:
+        return create_response(f"<tool-use-error>\n{erreur}\n</tool-use-error>", is_error=True)
+
     page_size, page_number, refus_pagination = _borne_pagination(args, 10, 100)
     if refus_pagination is not None:
         return refus_pagination
 
-    # Construction des filtres
-    filtres = [
-        {
-            "facette": "JURIDICTION_JUDICIAIRE",
-            "valeurs": ["Cour de cassation"]
-        },
-        {
-            "facette": "DATE_DECISION",
-            "dates": {
-                "start": date_debut,
-                "end": date_fin
-            }
-        }
-    ]
-
-    # Filtre MATIERE (obligatoire) → formations Cour de cassation
     try:
-        matieres, formations_api = formations_cassation(args.get("matiere"))
-    except ValueError as erreur:
-        return create_response(
-            f"<tool-use-error>\n{erreur}\n</tool-use-error>",
-            is_error=True
+        collecte = recherche.collecter_avec_cache(plan, legifrance_client)
+    except recherche.RechercheTropLarge as trop:
+        refus = _refus_requete_trop_large(trop.total)
+        detail = "\n".join(_ligne_compte(compte) for compte in trop.comptes)
+        refus["content"][0]["text"] = refus["content"][0]["text"].replace(
+            "</tool-use-error>", f"\nDétail des totaux :\n{detail}\n</tool-use-error>"
         )
-    filtres.append({
-        "facette": "CASSATION_FORMATION",
-        "valeurs": formations_api
-    })
-
-    # Filtre PUBLICATION
-    publication = args.get("CASSATION_TYPE_PUBLICATION_BULLETIN", "TOUS")
-    if publication != "TOUS":
-        valeur_pub = "T" if publication == "PUBLIE" else "F"
-        filtres.append({
-            "facette": "CASSATION_TYPE_PUBLICATION_BULLETIN",
-            "valeurs": [valeur_pub]
-        })
-
-    try:
-        # Appel API avec critères parsés
-        # On passe directement les critères au lieu de laisser legifrance_client splitter la query
-        result = legifrance_client.search_with_criteres(
-            fond="JURI",
-            criteres=criteres_parsed,
-            operateur=operateur_query,
-            filtres=filtres,
-            type_champ=type_champ,
-            page_number=page_number,
-            page_size=page_size,
-            sort=sort
-        )
-
-        # Construction du résumé
-        total = result.get("totalResultNumber", 0)
-        resultats = result.get("results", [])
-
-        # Vérifier si la requête est trop large (> 500 résultats)
-        if total > LIMITE_RESULTATS:
-            return _refus_requete_trop_large(total)
-
-        matiere_str = ", ".join(matieres)
-
-        summary_parts = [
-            f"**🏛️ COUR DE CASSATION**",
-            f"",
-            f"**Requête:** {query}",
-            f"**Matière:** {matiere_str}",
-            f"**Période:** {date_debut} → {date_fin}",
-            f"**Total:** {total:,} décisions".replace(',', ' '),
-            f"**Affichées:** {len(resultats)} résultats",
-            f""
-        ]
-
-        if publication != "TOUS":
-            summary_parts.append(f"**Publication:** {publication}")
-
-        summary_parts.append("")
-        summary_parts.append("═" * 80)
-        summary_parts.append("")
-
-        # Formater les résultats
-        for i, r in enumerate(resultats, 1):
-            titles = r.get("titles", [])
-            if titles:
-                titre = titles[0].get("title", "")
-                juri_id = titles[0].get("id", "")
-            else:
-                titre = "Sans titre"
-                juri_id = ""
-
-            # Titre de la décision
-            summary_parts.append(f"{i}. {titre}")
-
-            # Lien Légifrance
-            if juri_id:
-                summary_parts.append(f"   Lien: https://www.legifrance.gouv.fr/juri/id/{juri_id}")
-
-            # L'analyse complète vient de la consultation de la décision. Les
-            # sections de recherche ne servent ici qu'aux articles visés.
-            _append_decision_analysis(summary_parts, juri_id, r)
-            sections = r.get("sections", [])
-            articles_vises = []
-
-            for section in sections:
-                extracts = section.get("extracts", [])
-                for extract in extracts:
-                    field_name = extract.get("searchFieldName", "")
-                    values = extract.get("values", [])
-
-                    if field_name == "Texte appliqué" and values:
-                        for val in values:
-                            clean = val.replace("<mark>", "").replace("</mark>", "").replace("[...]", "").strip()
-                            if clean and clean not in articles_vises:
-                                articles_vises.append(clean)
-
-            # Afficher les articles visés
-            if articles_vises:
-                summary_parts.append(f"   Articles visés: {', '.join(articles_vises[:3])}")
-                if len(articles_vises) > 3:
-                    summary_parts.append(f"   ... et {len(articles_vises) - 3} autre(s)")
-
-            summary_parts.append("")
-
-        summary = "\n".join(summary_parts)
-
-        return create_response(summary)
-
+        return refus
     except Exception as e:
         return create_response(
-            f"❌ **Erreur recherche Cour de cassation**\n\n"
-            f"Requête: {query}\n"
-            f"Erreur: {str(e)}",
-            is_error=True
+            f"<tool-use-error>\nErreur recherche jurisprudence\nRequête: {plan['query']}\nErreur: {e}\n</tool-use-error>",
+            is_error=True,
         )
 
-
-def handle_search_cour_appel(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
-    """Recherche Cours d'appel avec parsing intelligent de la query"""
-
-    query = args.get("query", "").strip()
-
-    # Parser la query
-    operateur_query, type_recherche, criteres_parsed = parse_query(query)
-    type_champ = "ALL"
-
-    # Dates par défaut : 3 ans (volume plus élevé)
-    date_fin = args.get("date_fin")
-    date_debut = args.get("date_debut")
-    if not date_fin:
-        date_fin = datetime.now().strftime("%Y-%m-%d")
-    if not date_debut:
-        date_debut = (datetime.now() - timedelta(days=3*365)).strftime("%Y-%m-%d")
-    date_fin = borne_haute_reelle(date_fin)
-
-    sort = args.get("sort", "DATE_DESC")
-    page_size, page_number, refus_pagination = _borne_pagination(args, 15, 100)
-    if refus_pagination is not None:
-        return refus_pagination
-
-    # Construction des filtres
-    filtres = [
-        {
-            "facette": "JURIDICTION_JUDICIAIRE",
-            "valeurs": ["Juridictions d'appel"]
-        },
-        {
-            "facette": "DATE_DECISION",
-            "dates": {
-                "start": date_debut,
-                "end": date_fin
-            }
-        }
+    resultats = collecte["resultats"]
+    debut = (page_number - 1) * page_size
+    page = resultats[debut:debut + page_size]
+    parts = [
+        "**⚖️ RECHERCHE JURISPRUDENCE (Légifrance + Judilibre)**",
+        "",
+        f"**Requête:** {plan['query']}",
+        f"**Sources:** {', '.join('Légifrance' if s == 'legifrance' else 'Judilibre' for s in plan['sources'])}",
+        *_lignes_filtres(plan),
+        "**Totaux par juridiction (avant fusion):**",
+        *(_ligne_compte(compte) for compte in collecte["comptes"]),
+        f"**Total:** {len(resultats)} décision(s) distincte(s)",
+    ]
+    if collecte["fusionnees"]:
+        parts.append(f"**Doublons Légifrance/Judilibre fusionnés:** {collecte['fusionnees']}")
+    if collecte["ecartees"]:
+        parts.append(
+            f"**Résultats Judilibre écartés:** {collecte['ecartees']} (expression exacte absente du texte intégral)"
+        )
+    for avertissement in collecte["avertissements"]:
+        parts.append(f"⚠️ {avertissement}")
+    parts += [
+        f"**Page:** {page_number} — résultats {debut + 1 if page else 0} à {debut + len(page)} sur {len(resultats)}, du plus récent au plus ancien",
+        "",
+        "═" * 80,
+        "",
     ]
 
-    # Filtre APPEL_SIEGE_APPEL
-    sieges = args.get("APPEL_SIEGE_APPEL", [])
-    if sieges:
-        filtres.append({
-            "facette": "APPEL_SIEGE_APPEL",
-            "valeurs": sieges
-        })
-
-    try:
-        result = legifrance_client.search_with_criteres(
-            fond="JURI",
-            criteres=criteres_parsed,
-            operateur=operateur_query,
-            filtres=filtres,
-            type_champ=type_champ,
-            page_number=page_number,
-            page_size=page_size,
-            sort=sort
-        )
-
-        total = result.get("totalResultNumber", 0)
-        resultats = result.get("results", [])
-
-        # Vérifier si la requête est trop large (> 500 résultats)
-        if total > LIMITE_RESULTATS:
-            return _refus_requete_trop_large(total)
-
-        sieges_str = ", ".join(sieges) if sieges else "TOUTES"
-
-        summary_parts = [
-            f"**⚖️ COURS D'APPEL**",
-            f"",
-            f"**Requête:** {query}",
-            f"**Cour(s):** {sieges_str}",
-            f"**Période:** {date_debut} → {date_fin}",
-            f"**Total:** {total:,} décisions".replace(',', ' '),
-            f"**Affichées:** {len(resultats)}",
-            f"",
-            "═" * 80,
-            ""
-        ]
-
-        for i, r in enumerate(resultats, 1):
-            titles = r.get("titles", [])
-            if titles:
-                titre = titles[0].get("title", "")
-                juri_id = titles[0].get("id", "")
-            else:
-                titre = "Sans titre"
-                juri_id = ""
-
-            # Titre de la décision
-            summary_parts.append(f"{i}. {titre}")
-
-            # Lien Légifrance
-            if juri_id:
-                summary_parts.append(f"   Lien: https://www.legifrance.gouv.fr/juri/id/{juri_id}")
-
-            _append_decision_analysis(summary_parts, juri_id, r)
-            sections = r.get("sections", [])
-            articles_vises = []
-
-            for section in sections:
-                extracts = section.get("extracts", [])
-                for extract in extracts:
-                    field_name = extract.get("searchFieldName", "")
-                    values = extract.get("values", [])
-
-                    if field_name == "Texte appliqué" and values:
-                        for val in values:
-                            clean = val.replace("<mark>", "").replace("</mark>", "").replace("[...]", "").strip()
-                            if clean and clean not in articles_vises:
-                                articles_vises.append(clean)
-
-            # Afficher les articles visés
-            if articles_vises:
-                summary_parts.append(f"   Articles visés: {', '.join(articles_vises[:3])}")
-                if len(articles_vises) > 3:
-                    summary_parts.append(f"   ... et {len(articles_vises) - 3} autre(s)")
-
-            summary_parts.append("")
-
-        summary = "\n".join(summary_parts)
-
-        return create_response(summary)
-
-    except Exception as e:
-        return create_response(
-            f"❌ **Erreur recherche Cours d'appel**\n\n"
-            f"Erreur: {str(e)}",
-            is_error=True
-        )
-
-
-def handle_search_conseil_etat(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
-    """Recherche Conseil d'État avec parsing intelligent de la query"""
-
-    query = args.get("query", "").strip()
-
-    # Parser la query pour extraire opérateurs et termes
-    operateur_query, type_recherche, criteres_parsed = parse_query(query)
-    type_champ = "ALL"
-
-    # Dates par défaut : 5 ans
-    date_fin = args.get("date_fin")
-    date_debut = args.get("date_debut")
-    if not date_fin:
-        date_fin = datetime.now().strftime("%Y-%m-%d")
-    if not date_debut:
-        date_debut = (datetime.now() - timedelta(days=5*365)).strftime("%Y-%m-%d")
-    date_fin = borne_haute_reelle(date_fin)
-
-    # Pagination et tri
-    sort = "PERTINENCE"
-    page_size, page_number, refus_pagination = _borne_pagination(args, 10, 100)
-    if refus_pagination is not None:
-        return refus_pagination
-
-    # Construction des filtres
-    filtres = [
-        {
-            "facette": "DATE_DECISION",
-            "dates": {
-                "start": date_debut,
-                "end": date_fin
-            }
-        },
-        # JURIDICTION_NATURE est une facette hiérarchique du fonds CETAT : la
-        # forme plate {"facette": "JURIDICTION_NATURE", "valeurs": [...]}
-        # rend HTTP 500, il faut impérativement la clé multiValeurs (mesure
-        # du 2026-09-02, voir docs/facettes-officielles-dila.md). Une liste
-        # fille vide sélectionne tout le parent CONSEIL_ETAT.
-        {
-            "facette": "JURIDICTION_NATURE",
-            "valeurs": ["CONSEIL_ETAT"],
-            "multiValeurs": {"CONSEIL_ETAT": []}
-        }
-    ]
-
-    # Filtre PUBLICATION_RECUEIL
-    publication = args.get("PUBLICATION_RECUEIL", "TOUS")
-    if publication != "TOUS":
-        valeur_pub = "PUBLIE" if publication == "PUBLIE" else "NON_PUBLIE"
-        filtres.append({
-            "facette": "PUBLICATION_RECUEIL",
-            "valeurs": [valeur_pub]
-        })
-
-    try:
-        result = legifrance_client.search_with_criteres(
-            fond="CETAT",
-            criteres=criteres_parsed,
-            operateur=operateur_query,
-            filtres=filtres,
-            type_champ=type_champ,
-            page_number=page_number,
-            page_size=page_size,
-            sort=sort
-        )
-        resultats = result.get("results", []) or []
-        reported_total = result.get("totalResultNumber")
-        try:
-            total = int(reported_total) if reported_total is not None else None
-        except (TypeError, ValueError):
-            total = None
-
-        if total is not None and total > LIMITE_RESULTATS:
-            return _refus_requete_trop_large(total)
-
-        summary_parts = [
-            f"**⚖️ CONSEIL D'ÉTAT**",
-            f"",
-            f"**Requête:** {query}",
-            f"**Période:** {date_debut} → {date_fin}",
-            f"**Page:** {page_number} — {len(resultats)} décision(s) affichée(s)",
-            f""
-        ]
-
-        if total is not None:
-            summary_parts.append(
-                f"**Total rendu par l'API:** {total:,} décisions".replace(',', ' ')
-            )
-
-        if publication != "TOUS":
-            summary_parts.append(f"**Publication:** {publication}")
-
-        summary_parts.append("")
-        summary_parts.append("═" * 80)
-        summary_parts.append("")
-
-        # Formater les résultats
-        for i, r in enumerate(resultats, 1):
-            titles = r.get("titles", [])
-            if titles:
-                titre = titles[0].get("title", "")
-                juri_id = titles[0].get("id", "")
-            else:
-                titre = "Sans titre"
-                juri_id = ""
-
-            summary_parts.append(f"**{i}. {titre}**")
-            summary_parts.append(f"   ID: {juri_id}")
-
-            # Lien Légifrance
-            if juri_id:
-                summary_parts.append(f"   Lien: {LEGIFRANCE_BASE_URL}/cetat/id/{juri_id}")
-
-            _append_decision_analysis(summary_parts, juri_id, r)
-
-            summary_parts.append("")
-
-        summary = "\n".join(summary_parts)
-
-        return create_response(summary)
-
-    except Exception as e:
-        return create_response(
-            f"<tool-use-error>\n"
-            f"Erreur recherche Conseil d'État\n"
-            f"Requête: {query}\n"
-            f"Erreur: {str(e)}\n"
-            f"</tool-use-error>",
-            is_error=True
-        )
-
-
-def handle_search_caa(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
-    """Recherche CAA avec parsing intelligent de la query"""
-
-    query = args.get("query", "").strip()
-
-    # Parser la query pour extraire opérateurs et termes
-    operateur_query, type_recherche, criteres_parsed = parse_query(query)
-    type_champ = "ALL"
-
-    # Dates par défaut : 3 ans
-    date_fin = args.get("date_fin")
-    date_debut = args.get("date_debut")
-    if not date_fin:
-        date_fin = datetime.now().strftime("%Y-%m-%d")
-    if not date_debut:
-        date_debut = (datetime.now() - timedelta(days=3*365)).strftime("%Y-%m-%d")
-    date_fin = borne_haute_reelle(date_fin)
-
-    # Pagination et tri
-    sort = "PERTINENCE"
-    page_size, page_number, refus_pagination = _borne_pagination(args, 15, 100)
-    if refus_pagination is not None:
-        return refus_pagination
-
-    # Construction des filtres
-    filtres = [
-        {
-            "facette": "DATE_DECISION",
-            "dates": {
-                "start": date_debut,
-                "end": date_fin
-            }
-        }
-    ]
-
-    # Filtre PUBLICATION_RECUEIL
-    publication = args.get("PUBLICATION_RECUEIL", "TOUS")
-    if publication != "TOUS":
-        valeur_pub = "PUBLIE" if publication == "PUBLIE" else "NON_PUBLIE"
-        filtres.append({
-            "facette": "PUBLICATION_RECUEIL",
-            "valeurs": [valeur_pub]
-        })
-
-    # Filtre CAA_VILLE
-    villes = args.get("CAA_VILLE", [])
-
-    # La facette JURIDICTION_NATURE du fonds CETAT est hiérarchique : la
-    # forme plate {"facette": "JURIDICTION_NATURE", "valeurs": ["COURS_APPEL"]}
-    # rend HTTP 500, il faut impérativement la clé multiValeurs pour préciser
-    # les villes filles. Une liste vide sélectionne toutes les CAA. Ce filtre
-    # serveur remplace le tri côté client sur le titre, qui plafonnait le
-    # nombre de décisions atteignables à la taille du parcours.
-    filtres.append({
-        "facette": "JURIDICTION_NATURE",
-        "valeurs": ["COURS_APPEL"],
-        "multiValeurs": {"COURS_APPEL": list(villes)}
-    })
-
-    try:
-        result = legifrance_client.search_with_criteres(
-            fond="CETAT",
-            criteres=criteres_parsed,
-            operateur=operateur_query,
-            filtres=filtres,
-            type_champ=type_champ,
-            page_number=page_number,
-            page_size=page_size,
-            sort=sort
-        )
-        resultats = result.get("results", []) or []
-        reported_total = result.get("totalResultNumber")
-        try:
-            total_api = int(reported_total) if reported_total is not None else None
-        except (TypeError, ValueError):
-            total_api = None
-
-        if total_api is not None and total_api > LIMITE_RESULTATS:
-            return _refus_requete_trop_large(total_api)
-
-        villes_str = ", ".join(villes) if villes else "TOUTES"
-
-        summary_parts = [
-            f"**⚖️ COURS ADMINISTRATIVES D'APPEL**",
-            f"",
-            f"**Requête:** {query}",
-            f"**Ville(s):** {villes_str}",
-            f"**Période:** {date_debut} → {date_fin}",
-            f"**Page:** {page_number} — {len(resultats)} décision(s) affichée(s)",
-            f""
-        ]
-
-        if total_api is not None:
-            summary_parts.append(
-                f"**Total rendu par l'API:** {total_api:,} décisions".replace(',', ' ')
-            )
-
-        if publication != "TOUS":
-            summary_parts.append(f"**Publication:** {publication}")
-
-        summary_parts.append("")
-        summary_parts.append("═" * 80)
-        summary_parts.append("")
-
-        # Formater les résultats
-        for i, r in enumerate(resultats, 1):
-            titles = r.get("titles", [])
-            if titles:
-                titre = titles[0].get("title", "")
-                juri_id = titles[0].get("id", "")
-            else:
-                titre = "Sans titre"
-                juri_id = ""
-
-            summary_parts.append(f"**{i}. {titre}**")
-            summary_parts.append(f"   ID: {juri_id}")
-
-            # Lien Légifrance
-            if juri_id:
-                summary_parts.append(f"   Lien: {LEGIFRANCE_BASE_URL}/cetat/id/{juri_id}")
-
-            _append_decision_analysis(summary_parts, juri_id, r)
-
-            summary_parts.append("")
-
-        summary = "\n".join(summary_parts)
-
-        return create_response(summary)
-
-    except Exception as e:
-        return create_response(
-            f"<tool-use-error>\n"
-            f"Erreur recherche CAA\n"
-            f"Requête: {query}\n"
-            f"Erreur: {str(e)}\n"
-            f"</tool-use-error>",
-            is_error=True
-        )
-
-
-FAMILLES_PREMIER_DEGRE = {
-    "TRIBUNAL_JUDICIAIRE": ["tribunal judiciaire"],
-    "TRIBUNAL_GRANDE_INSTANCE": ["tribunal de grande instance"],
-    "TRIBUNAL_INSTANCE": ["tribunal d'instance"],
-    "TRIBUNAL_COMMERCE": ["tribunal de commerce"],
-    "CONSEIL_PRUDHOMMES": ["conseil de prud'hommes", "conseil des prud'hommes"],
-    "TRIBUNAL_CORRECTIONNEL": ["tribunal correctionnel"],
-    "TRIBUNAL_SECURITE_SOCIALE": [
-        "tribunal des affaires de securite sociale",
-        "trib. des affaires de securite sociale",
-    ],
-    "TRIBUNAL_BAUX_RURAUX": ["tribunal paritaire des baux ruraux"],
-    "JURIDICTION_PROXIMITE": ["juridiction de proximite", "juge de proximite"],
-    "OUTRE_MER": [
-        "tribunal de premiere instance",
-        "tribunal superieur d'appel",
-        "chambre de l'application des peines",
-    ],
-    "TRIBUNAL_CONFLITS": ["tribunal_conflit", "tribunal des conflits"],
-}
-
-
-def _sans_accents(texte):
-    """Minuscule sans accents, pour comparer les libelles de la facette."""
-    decompose = unicodedata.normalize("NFD", texte.lower())
-    return "".join(c for c in decompose if unicodedata.category(c) != "Mn")
-
-
-def familles_premier_degre(argument):
-    """
-    Normalise l'argument `PREMIER_DEGRE_TYPE_JURIDICTION` et rend la liste des
-    familles demandees. Leve ValueError si le filtre est absent ou inconnu.
-
-    En premiere instance, la matiere est portee par le nom de la juridiction :
-    sans ce filtre, une recherche sociale remonte du correctionnel et du
-    commercial. Le filtre est donc obligatoire, comme la matiere en cassation.
-    """
-    if argument is None:
-        demandees = []
-    elif isinstance(argument, str):
-        demandees = [argument]
-    elif isinstance(argument, (list, tuple)):
-        demandees = [str(a) for a in argument]
-    else:
-        demandees = []
-
-    demandees = [a.strip().upper() for a in demandees if str(a).strip()]
-    connues = ", ".join(FAMILLES_PREMIER_DEGRE)
-
-    if not demandees:
-        raise ValueError(
-            "Filtre `PREMIER_DEGRE_TYPE_JURIDICTION` obligatoire : indiquez au "
-            f"moins une famille parmi {connues}.\n"
-            "En premiere instance, la matiere est portee par le nom de la "
-            "juridiction : sans ce filtre, la recherche melange prud'hommes, "
-            "correctionnel et commerce."
-        )
-
-    inconnues = [a for a in demandees if a not in FAMILLES_PREMIER_DEGRE]
-    if inconnues:
-        raise ValueError(
-            f"Famille(s) inconnue(s) : {', '.join(inconnues)}. "
-            f"Valeurs acceptees : {connues}."
-        )
-
-    retenues = []
-    for a in demandees:
-        if a not in retenues:
-            retenues.append(a)
-    return retenues
-
-
-def valeurs_premier_degre(familles, valeurs_facette):
-    """
-    Etend les familles demandees aux libelles reels de la facette officielle
-    PREMIER_DEGRE_TYPE_JURIDICTION, qui mele libelles generiques
-    ("Conseil de prud'hommes") et libelles par ville ("Tribunal correctionnel
-    de Nice"). Rend la liste des libelles a envoyer a l'API.
-    """
-    prefixes = []
-    for famille in familles:
-        prefixes.extend(FAMILLES_PREMIER_DEGRE[famille])
-
-    retenus = []
-    for libelle in valeurs_facette:
-        normalise = _sans_accents(libelle)
-        if any(normalise.startswith(p) for p in prefixes) and libelle not in retenus:
-            retenus.append(libelle)
-    return retenus
-
-
-def handle_search_premiere_instance(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
-    """Recherche première instance avec parsing intelligent de la query"""
-
-    query = args.get("query", "").strip()
-
-    # Parser la query (utilise OU par défaut si pas d'opérateur explicite dans la query)
-    operateur_query, type_recherche, criteres_parsed = parse_query(query)
-
-    # Si la query ne contient pas d'opérateurs explicites ET/OU, forcer OU car volume faible
-    if " ET " not in query.upper() and " OU " not in query.upper():
-        operateur_query = "OU"
-        # Mettre à jour les critères avec OU
-        for c in criteres_parsed:
-            c["operateur"] = "OU"
-
-    type_champ = "ALL"
-
-    # Dates par défaut : 5 ans
-    date_fin = args.get("date_fin")
-    date_debut = args.get("date_debut")
-    if not date_fin:
-        date_fin = datetime.now().strftime("%Y-%m-%d")
-    if not date_debut:
-        date_debut = (datetime.now() - timedelta(days=5*365)).strftime("%Y-%m-%d")
-    date_fin = borne_haute_reelle(date_fin)
-
-    sort = args.get("sort", "DATE_DESC")
-    page_size, page_number, refus_pagination = _borne_pagination(args, 20, 100)
-    if refus_pagination is not None:
-        return refus_pagination
-
-    # Construction des filtres
-    filtres = [
-        {
-            "facette": "JURIDICTION_JUDICIAIRE",
-            "valeurs": ["Juridictions du premier degré"]
-        },
-        {
-            "facette": "DATE_DECISION",
-            "dates": {
-                "start": date_debut,
-                "end": date_fin
-            }
-        }
-    ]
-
-    # Filtre PREMIER_DEGRE_TYPE_JURIDICTION (obligatoire)
-    try:
-        familles = familles_premier_degre(args.get("PREMIER_DEGRE_TYPE_JURIDICTION"))
-    except ValueError as erreur:
-        return create_response(
-            f"<tool-use-error>\n{erreur}\n</tool-use-error>",
-            is_error=True
-        )
-
-    try:
-        # La facette officielle mele libelles generiques et libelles par ville :
-        # on lit ses valeurs reelles pour la requete en cours, puis on etend les
-        # familles demandees. Sans cette etape, "Tribunal correctionnel" ne
-        # remonterait pas "Tribunal correctionnel de Nice".
-        sonde = legifrance_client.search_with_criteres(
-            fond="JURI",
-            criteres=criteres_parsed,
-            operateur=operateur_query,
-            filtres=filtres,
-            type_champ=type_champ,
-            page_number=1,
-            page_size=1,
-            sort=sort
-        )
-        valeurs_facette = []
-        for facette in sonde.get("facets") or []:
-            if facette.get("facetElem") == "PREMIER_DEGRE_TYPE_JURIDICTION":
-                valeurs_facette = list((facette.get("values") or {}).keys())
-                break
-
-        libelles = valeurs_premier_degre(familles, valeurs_facette)
-        if not libelles:
-            return create_response(
-                f"**📋 JURIDICTIONS DE PREMIÈRE INSTANCE**\n\n"
-                f"**Requête:** {query}\n"
-                f"**Famille(s):** {', '.join(familles)}\n"
-                f"**Période:** {date_debut} → {date_fin}\n\n"
-                f"Aucune décision de ces juridictions ne correspond à cette "
-                f"requête sur cette période.\n"
-                f"La recherche n'a pas été élargie aux autres juridictions du "
-                f"premier degré."
-            )
-
-        filtres.append({
-            "facette": "PREMIER_DEGRE_TYPE_JURIDICTION",
-            "valeurs": libelles
-        })
-
-        result = legifrance_client.search_with_criteres(
-            fond="JURI",
-            criteres=criteres_parsed,
-            operateur=operateur_query,
-            filtres=filtres,
-            type_champ=type_champ,
-            page_number=page_number,
-            page_size=page_size,
-            sort=sort
-        )
-
-        total = result.get("totalResultNumber", 0)
-        resultats = result.get("results", [])
-
-        # Vérifier si la requête est trop large (> 500 résultats)
-        if total > LIMITE_RESULTATS:
-            return _refus_requete_trop_large(total)
-
-        types_str = ", ".join(familles)
-
-        summary_parts = [
-            f"**📋 JURIDICTIONS DE PREMIÈRE INSTANCE**",
-            f"",
-            f"**Requête:** {query}",
-            f"**Type(s):** {types_str}",
-            f"**Période:** {date_debut} → {date_fin}",
-            f"**Total:** {total} décisions",
-            f"**Affichées:** {len(resultats)}",
-            f"",
-            f"⚠️ Volume très limité dans la base Légifrance",
-            f"",
-            "═" * 80,
-            ""
-        ]
-
-        for i, r in enumerate(resultats, 1):
-            titles = r.get("titles", [])
-            if titles:
-                titre = titles[0].get("title", "")
-                juri_id = titles[0].get("id", "")
-            else:
-                titre = "Sans titre"
-                juri_id = ""
-
-            # Titre de la décision
-            summary_parts.append(f"{i}. {titre}")
-
-            # Lien Légifrance
-            if juri_id:
-                summary_parts.append(f"   Lien: https://www.legifrance.gouv.fr/juri/id/{juri_id}")
-
-            _append_decision_analysis(summary_parts, juri_id, r)
-            sections = r.get("sections", [])
-            articles_vises = []
-
-            for section in sections:
-                extracts = section.get("extracts", [])
-                for extract in extracts:
-                    field_name = extract.get("searchFieldName", "")
-                    values = extract.get("values", [])
-
-                    if field_name == "Texte appliqué" and values:
-                        for val in values:
-                            clean = val.replace("<mark>", "").replace("</mark>", "").replace("[...]", "").strip()
-                            if clean and clean not in articles_vises:
-                                articles_vises.append(clean)
-
-            # Afficher les articles visés
-            if articles_vises:
-                summary_parts.append(f"   Articles visés: {', '.join(articles_vises[:3])}")
-                if len(articles_vises) > 3:
-                    summary_parts.append(f"   ... et {len(articles_vises) - 3} autre(s)")
-
-            summary_parts.append("")
-
-        summary = "\n".join(summary_parts)
-
-        return create_response(summary)
-
-    except Exception as e:
-        return create_response(
-            f"❌ **Erreur recherche première instance**\n\n"
-            f"Erreur: {str(e)}",
-            is_error=True
-        )
+    for position, resultat in enumerate(page, debut + 1):
+        if resultat["source"] == "legifrance":
+            origine = "Légifrance + Judilibre" if resultat.get("judilibre") else "Légifrance"
+            parts.append(f"{position}. {resultat['titre']}")
+            parts.append(f"   Source: {origine} — {recherche.LIBELLES_JURIDICTIONS[resultat['juridiction']]}")
+            parts.append(f"   ID: {resultat['id']}")
+            parts.append(f"   Lien: {resultat['lien']}")
+            if resultat.get("judilibre"):
+                parts.append(f"   Lien Judilibre: {resultat['judilibre']['lien']}")
+            _append_decision_analysis(parts, resultat["id"], resultat["resultat"])
+            articles = _articles_vises(resultat["resultat"])
+            if articles:
+                parts.append(f"   Articles visés: {', '.join(articles[:3])}")
+                if len(articles) > 3:
+                    parts.append(f"   ... et {len(articles) - 3} autre(s)")
+        else:
+            decision = resultat.get("decision")
+            if decision is None:
+                try:
+                    decision = recherche.decision_judilibre(legifrance_client, resultat["id"])
+                    resultat["decision"] = decision
+                except Exception:
+                    decision = {}
+            parts.append(f"{position}. {recherche.titre_judilibre(decision, resultat['titre'])}")
+            parts.append(f"   Source: Judilibre — {recherche.LIBELLES_JURIDICTIONS[resultat['juridiction']]}")
+            parts.append(f"   ID: {resultat['id']}")
+            parts.append(f"   Lien: {resultat['lien']}")
+            libelle, analyse = _analyse_judilibre(decision, resultat["resultat"])
+            if analyse:
+                parts.append(f"   {libelle}: {analyse}")
+            if resultat.get("verification"):
+                parts.append(f"   ⚠️ {resultat['verification']}")
+        parts.append("")
+
+    return create_response("\n".join(parts))
 
 
 def handle_search_code(args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
@@ -1531,12 +786,7 @@ def handle_historique_judiciaire(args: Dict[str, Any], user_id: str) -> Dict[str
 
 
 TOOL_HANDLERS = {
-    # Nouveaux outils optimisés
-    "Search_Cour_Cassation": handle_search_cour_cassation,
-    "Search_Cour_Appel": handle_search_cour_appel,
-    "Search_Conseil_Etat": handle_search_conseil_etat,
-    "Search_CAA": handle_search_caa,
-    "Search_Premiere_Instance": handle_search_premiere_instance,
+    "Search_Jurisprudence": handle_recherche_jurisprudence,
     "Search_Code": handle_search_code,
     "Build_Research_Corpus": handle_build_research_corpus,
     "Historique_Judiciaire": handle_historique_judiciaire,

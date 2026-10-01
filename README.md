@@ -1,9 +1,8 @@
 # MCP Légifrance
 
 Serveur MCP autonome donnant accès aux sources juridiques officielles
-françaises via les API Légifrance/PISTE et BODACC. Il expose un transport stdio
-pour les clients MCP et un adaptateur HTTP local optionnel lié exclusivement à
-`127.0.0.1`.
+françaises via les API Légifrance et Judilibre (PISTE) et BODACC. Il expose un
+transport stdio pour les clients MCP.
 
 Ce dépôt est extrait de PieceMaker avec son historique. Il ne dépend pas de
 l'installateur, du serveur ou des dossiers utilisateurs de PieceMaker.
@@ -32,14 +31,26 @@ LEGIFRANCE_CLIENT_SECRET=...
 LEGIFRANCE_ENV=production
 ```
 
+Les mêmes identifiants servent à Judilibre : l'application PISTE doit être
+abonnée à l'API Légifrance et à l'API Judilibre. Sans abonnement Judilibre, la
+recherche continue sur Légifrance seul et le signale.
+
 On peut aussi fournir directement ces variables dans l'environnement, ou
 définir `LEGIFRANCE_ENV_FILE=/chemin/absolu/.env`. La découverte MCP fonctionne
 sans identifiants ; seuls les appels réseau les exigent.
 
 ## Outils exposés
 
-- recherche jurisprudentielle : Cour de cassation, cours d'appel, Conseil
-  d'État, CAA et première instance ;
+- recherche jurisprudentielle unique (`Search_Jurisprudence`) : Cour de
+  cassation, cours d'appel, première instance, Conseil d'État et CAA, dans
+  Légifrance et Judilibre à la fois, avec les mêmes filtres (matière et
+  publication en cassation, villes des cours d'appel et des CAA, familles du
+  premier degré, recueil Lebon, dates) et la même requête booléenne. Les
+  décisions présentes dans les deux bases (même juridiction, même date, même
+  numéro) ne sont listées qu'une fois. Légifrance n'ayant plus de décisions
+  de cours d'appel depuis 2023 ni de première instance depuis 2024, Judilibre
+  les fournit ; il couvre la Cour de cassation, les cours d'appel, les
+  tribunaux judiciaires et de commerce ;
 - recherche dans les codes à une date de vigueur donnée, consultation du texte
   intégral d'un article identifié et consultation du texte intégral d'une décision ;
 - historique procédural strict d'une décision, établi sur la seule métadonnée
@@ -52,15 +63,15 @@ sans identifiants ; seuls les appels réseau les exigent.
 - recherche en temps réel dans le lexique juridique officiel de justice.fr
   avec l'outil `dictionnaire_juridique` ;
 - construction et validation d'un corpus jurisprudentiel exhaustif sans RAG,
-  embeddings ni top-k.
+  embeddings ni top-k, collecté par le même moteur et avec les mêmes filtres
+  que `Search_Jurisprudence`.
 
 Le serveur fournit également un lexique de l’API Légifrance.
 
 ## Syntaxe des recherches
 
-Les outils `Search_Cour_Cassation`, `Search_Cour_Appel`,
-`Search_Conseil_Etat`, `Search_CAA`, `Search_Code`
-et `Build_Research_Corpus` partagent la même syntaxe :
+`Search_Jurisprudence`, `Search_Code` et `Build_Research_Corpus` partagent la
+même syntaxe :
 
 - les guillemets délimitent une expression exacte : `"faute grave"` ;
 - `ET` exige les deux côtés et est prioritaire sur `OU` ;
@@ -74,13 +85,23 @@ Exemple :
 ("faute grave" OU "faute lourde") ET licenciement
 ```
 
-`Search_Premiere_Instance` reconnaît la même syntaxe, mais relie par `OU` les
-mots non entre guillemets lorsqu'aucun opérateur n'est explicite, afin d'élargir
-ce corpus limité. Utiliser `ET` explicitement lorsqu'un cumul est requis.
+En première instance, sans `ET` ni `OU` explicite, les mots non entre
+guillemets sont reliés par `OU` afin d'élargir ce corpus limité. Utiliser `ET`
+explicitement lorsqu'un cumul est requis.
 
-L'ancien alias interne `recherche_jurisprudence` a été supprimé. Utiliser les
-outils spécialisés ci-dessus, qui appliquent les filtres propres à chaque fonds
-et rendent leurs limites explicites.
+La requête est mise sous forme normale disjonctive : chaque branche `OU` est
+une suite de termes reliés par `ET`. Légifrance reçoit toutes les branches en
+un seul appel. Judilibre reçoit une requête par branche, chaque mot étant
+obligatoire (`+mot`, élisions retirées) et chaque article cherché sous ses
+deux écritures (`+"L. 1235-3"` et `+L1235-3`). Judilibre ne garantissant pas
+l'adjacence des mots, une expression exacte de plusieurs mots est vérifiée sur
+le texte intégral de chaque décision trouvée seulement dans Judilibre ; les
+décisions qui ne la contiennent pas sont écartées et comptées.
+
+Au-delà de 500 résultats cumulés (Légifrance + Judilibre, avant fusion), la
+recherche est refusée. `consulter_decision` lit indifféremment un identifiant
+Légifrance (`JURITEXT…`, `CETATEXT…`) ou Judilibre (24 caractères
+hexadécimaux).
 
 ## Développement
 
